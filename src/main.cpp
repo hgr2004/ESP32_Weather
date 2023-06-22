@@ -44,9 +44,9 @@
 #include <string.h>
 #include "ArduinoJson.h"
 #include <TimeLib.h>
-//#include <WiFi.h>
-// #include <ESP8266WiFi.h>
-// #include <ESP8266HTTPClient.h>
+// #include <WiFi.h>
+//  #include <ESP8266WiFi.h>
+//  #include <ESP8266HTTPClient.h>
 #include <HTTPClient.h>
 // #include <ESP8266WebServer.h>
 // #include <WebServer.h>
@@ -59,8 +59,8 @@
 #include "number.h"
 #include "weathernum.h"
 #include <NTPClient.h>
-//#include <time.h>
-//#include <sys/time.h>
+// #include <time.h>
+// #include <sys/time.h>
 #include <ESP32Time.h>
 
 // Font files are stored in Flash FS
@@ -128,7 +128,6 @@ String rxload = "";              // RX的预置值
 #define CHARACTERISTIC_UUID_RX "a63016ab-fa9a-455f-b01b-7973c0f13055"
 #define CHARACTERISTIC_UUID_TX "a63016ab-fa9a-455f-b01b-7973c0f13055"
 
-
 /* *****************************************************************
  *  字库、图片库
  * *****************************************************************/
@@ -188,7 +187,7 @@ int pwm_freq = 5000;
 
 // 其余状态标志位
 int LCD_Rotation = 0;        // LCD屏幕方向
-int LCD_BL_PWM = 150;         // 屏幕亮度0-255，默认50
+int LCD_BL_PWM = 150;        // 屏幕亮度0-255，默认50
 uint8_t Wifi_en = 1;         // wifi状态标志位  1：打开    0：关闭
 uint8_t UpdateWeater_en = 0; // 更新时间标志位
 int prevTime = 0;            // 滚动显示更新标志位
@@ -228,16 +227,17 @@ const int timeZone = 8; // 东八区
 WiFiUDP ntpUDP;
 // IPAddress NtpIP = IPAddress(210,72,145,44);  //国家授时中心
 NTPClient timeClient(Udp, "ntp.ntsc.ac.cn", 60 * 60 * timeZone, 60000);
-ESP32Time rtc;   //用来管理系统时间
-
+ESP32Time rtc; // 用来管理系统时间
 
 hw_timer_t *timer = NULL; // 声明一个定时器用来取NTP
 long updateTime = 0;
 
-//进度条
+// 进度条
 byte loadNum = 6;
 
-
+/* 创建任务一和任务二的句柄，并初始化 */
+TaskHandle_t TASK_HandleWH = NULL;
+TaskHandle_t TASK_HandleNL = NULL;
 
 /* *********************************************************/
 /*  ***************函数定义**********************************/
@@ -267,7 +267,7 @@ void savewificonfig();
 void readwificonfig();
 void deletewificonfig();
 int StrSplit(String str, String fen, String *result);
-//void MansetTime(int sc, int mn, int hr, int dy, int mt, int yr);
+// void MansetTime(int sc, int mn, int hr, int dy, int mt, int yr);
 void setupBLE(String BLEName);
 void IRAM_ATTR onTimer();
 void ledcAnalogWrite(uint8_t channel, uint32_t value);
@@ -279,12 +279,12 @@ void IndoorTem();
 void Serial_set();
 void sleepTimeLoop(uint8_t Maxlight, uint8_t Minlight);
 void BluetoothProc();
-
+void TaskWH( void *param );
+void TaskNL( void *param );
 
 /* *********************************************************/
 /*  ********************************************************/
 /* *********************************************************/
-
 
 void setup()
 {
@@ -367,9 +367,9 @@ void setup()
   WiFi.setAutoReconnect(true);
   WiFi.setSleep(true);
 
-  TJpgDec.setJpgScale(1);
-  TJpgDec.setSwapBytes(true);
-  TJpgDec.setCallback(tft_output);
+  // TJpgDec.setJpgScale(1);
+  // TJpgDec.setSwapBytes(true);
+  // TJpgDec.setCallback(tft_output);
 
   while (WiFi.status() != WL_CONNECTED)
   {
@@ -418,27 +418,28 @@ void setup()
   // 每 60 * 60 秒同步时间一次
   timeClient.begin();
   setSyncProvider(getNtpTime);
-  setSyncInterval(60 * 60);   //每1小时同步一次时间
+  setSyncInterval(60 * 60); // 每1小时同步一次时间
   timeClient.update();
 
   int Maxtry = 0;
   while (rtc.getYear() == 1970)
   {
-    if (Maxtry > 10){
-      Serial.println("获取NTP时间失败，手动设置一个时间：2023-6-18-1-1-1"); //如果同步失败，手动设置一个系统时间。
-      rtc.setTime(01, 01, 01, 18, 6, 2023);  // 17th Jan 2021 15:24:30
-      break;      
+    if (Maxtry > 10)
+    {
+      Serial.println("获取NTP时间失败，手动设置一个时间：2023-6-18-1-1-1"); // 如果同步失败，手动设置一个系统时间。
+      rtc.setTime(01, 01, 01, 18, 6, 2023);                                 // 17th Jan 2021 15:24:30
+      break;
     }
     delay(1000);
     timeClient.update();
-    rtc.setTime(getNtpTime()); 
+    rtc.setTime(getNtpTime());
     Serial.println("正在同步。。。" + (String)Maxtry);
     Maxtry++;
   }
 
-  //开始相关显示
+  // 开始相关显示
   tft.fillScreen(TFT_BLACK); // 清屏
-//显示温湿度图标和方框
+                             // 显示温湿度图标和方框
   TJpgDec.setJpgScale(1);
   TJpgDec.setSwapBytes(true);
   TJpgDec.setCallback(tft_output);
@@ -447,7 +448,14 @@ void setup()
   TJpgDec.drawJpg(50, 200, humidity, sizeof(humidity));       // 湿度图标
   tft.drawRoundRect(170, 112, 66, 48, 5, TFT_YELLOW);         // 室内温湿度框
 
-  //获取城市代码
+  digitalClockDisplay(1);
+
+#if DHT_EN
+  if (DHT_img_flag != 0)
+    IndoorTem();
+#endif
+
+  // 获取城市代码
   int CityCODE = 0;
   for (int cnum = 5; cnum > 0; cnum--)
   {
@@ -460,13 +468,23 @@ void setup()
   else
     getCityCode(); // 获取城市代码
 
-  getCityWeater(); // 取天气情况
-  getNongli();     // 农历信息
+/* ********************************************************
+xTaskCreatePinnedToCore() 函数有 7 个参数：
+实现任务的函数名（task1）
+任务的任何名称（“task1”等）
+以字为单位分配给任务的堆栈大小（1 个字=2 字节）
+任务输入参数（可以为NULL）
+任务的优先级（0为最低优先级）
+任务句柄（可以为 NULL）
+任务将运行的核心 ID（0 或 1）
+* *********************************************************/
 
-#if DHT_EN
-  if (DHT_img_flag != 0)
-    IndoorTem();
-#endif
+  //分别在两个核心里面共创建2个任务，用来取天气和农历信息
+  xTaskCreatePinnedToCore(TaskWH, "Task_Weather", 3 * 8 * 1024, NULL, 1, &TASK_HandleWH, 0);
+  xTaskCreatePinnedToCore(TaskNL, "Task_Nongli", 3 * 8 * 1024, NULL, 1, &TASK_HandleNL, 1);
+
+  // getCityWeater(); // 取天气情况
+  // getNongli();     // 农历信息
 
   if (WiFi.status() == WL_CONNECTED)
   {
@@ -486,13 +504,27 @@ void loop()
   LCD_reflash(0);
   Serial_set();
   sleepTimeLoop(LCD_BL_PWM, 120); // 定时开关显示屏背光 参数是打开后最大亮度
-  BluetoothProc();           // BTE蓝牙处理
+  BluetoothProc();                // BTE蓝牙处理
 }
 
 /* ***************************************************************************
-  *  以下各类函数
-  *
-  * **************************************************************************/
+ *  以下各类函数
+ *
+ * **************************************************************************/
+void TaskWH( void *param ){
+  Serial.print("getCityWeater() 函数在核心上运行："); 
+  //Serial.println(xPortGetCoreID()); 
+  getCityWeater(); // 取天气情况
+  vTaskDelete( TASK_HandleWH );
+}
+ 
+void TaskNL( void *param ){
+  Serial.print("getNongli() 函数在核心上运行："); 
+  Serial.println(xPortGetCoreID()); 
+  getNongli();     // 农历信息
+  vTaskDelete( TASK_HandleNL );
+}
+
 void IRAM_ATTR onTimer()
 { // 定时器中断函数
   updateTime++;
@@ -601,8 +633,6 @@ int SentBT(String data)
  *  蓝牙相关变量函数结束
  ****************************************************************/
 
-
-
 /* *****************************************************************
  *  函数
  * *****************************************************************/
@@ -648,7 +678,7 @@ void readwificonfig()
   Serial.printf("Read WiFi Config.....\r\n");
   Serial.printf("SSID:%s\r\n", wificonf.stassid);
   Serial.print("************");
-  //Serial.printf("PSW:%s\r\n", wificonf.stapsw);
+  // Serial.printf("PSW:%s\r\n", wificonf.stapsw);
   Serial.printf("Connecting.....\r\n");
 }
 
@@ -1088,7 +1118,7 @@ void Webconfig()
   wm.resetSettings(); // wipe settings
 
   // add a custom input field
-  //int customFieldLength = 40;
+  // int customFieldLength = 40;
 
   // new (&custom_field) WiFiManagerParameter("customfieldid", "Custom Field Label", "Custom Field Value", customFieldLength,"placeholder=\"Custom Field Placeholder\"");
 
@@ -1161,18 +1191,18 @@ void Webconfig()
 
   bool res;
   // res = wm.autoConnect(); // auto generated AP name from chipid
-  uint64_t chipid;  
-  chipid=ESP.getEfuseMac();//The chip ID is essentially its MAC address(length: 6 bytes).
+  uint64_t chipid;
+  chipid = ESP.getEfuseMac(); // The chip ID is essentially its MAC address(length: 6 bytes).
   String StrSSID = "WeatherAP_" + String((unsigned long)(uint16_t)chipid, HEX);
 
   res = wm.autoConnect(StrSSID.c_str()); // anonymous ap
-    //res = wm.autoConnect("AutoConnectAP" + String((uint32_t)ESP.getEfuseMac())); // anonymous ap
+                                         // res = wm.autoConnect("AutoConnectAP" + String((uint32_t)ESP.getEfuseMac())); // anonymous ap
   //  res = wm.autoConnect("AutoConnectAP","password"); // password protected ap
 
-  while (!res){
-     wm.process(); // avoid delays() in loop when non-blocking and other long running code  
+  while (!res)
+  {
+    wm.process(); // avoid delays() in loop when non-blocking and other long running code
   }
-  
 }
 
 String getParam(String name)
@@ -1267,8 +1297,7 @@ void saveParamCallback()
 }
 #endif
 
-
-bool haveNL = 0 ;//每天凌晨更新农历
+bool haveNL = 0; // 每天凌晨更新农历
 void LCD_reflash(int en)
 {
   if (now() != prevDisplay || en == 1)
@@ -1317,9 +1346,9 @@ void LCD_reflash(int en)
     }
   }
 
-  //每天凌晨8分更新一下农历信息
-  // Serial.println("hours:" + String(rtc.getHour()));
-  // Serial.println("getMinutes:" + String(rtc.getMinute()));
+  // 每天凌晨8分更新一下农历信息
+  //  Serial.println("hours:" + String(rtc.getHour()));
+  //  Serial.println("getMinutes:" + String(rtc.getMinute()));
 
   if (rtc.getHour(true) == 0 && rtc.getMinute() == 8)
   {
@@ -1334,7 +1363,7 @@ void LCD_reflash(int en)
     haveNL = 0;
   }
 
-    // 定时器计数 秒  
+  // 定时器计数 秒
   if (updateTime > 5)
   {
     updateTime = 0;
@@ -1344,7 +1373,7 @@ void LCD_reflash(int en)
 // 发送HTTP请求并且将服务器响应通过串口输出
 void getCityCode()
 {
-  //String URL = "http://wgeo.weather.com.cn/ip/?_=" + String(now());
+  // String URL = "http://wgeo.weather.com.cn/ip/?_=" + String(now());
   String URL = "http://wgeo.weather.com.cn/ip/?_=" + String(rtc.getEpoch());
   // 创建 HTTPClient 对象
   HTTPClient httpClient;
@@ -1419,9 +1448,8 @@ void getCityCode()
 // 获取城市天气
 void getCityWeater()
 {
-  // String URL = "http://d1.weather.com.cn/dingzhi/" + cityCode + ".html?_="+String(now());//新getCityCodedata
-  //String URL = "http://d1.weather.com.cn/weather_index/" + cityCode + ".html?_=" + String(now()); // 原来
-  String URL = "http://d1.weather.com.cn/weather_index/" + cityCode + ".html?_=" + String(rtc.getEpoch()); 
+
+  String URL = "http://d1.weather.com.cn/weather_index/" + cityCode + ".html?_=" + String(rtc.getEpoch());
 
   Serial.println(URL);
   // 创建 HTTPClient 对象
@@ -1436,7 +1464,6 @@ void getCityWeater()
   // 启动连接并发送HTTP请求
   int httpCode = httpClient.GET();
   Serial.println("正在获取天气数据");
-  // Serial.println(URL);
 
   // 如果服务器响应OK则从服务器获取响应体信息并通过串口输出
   if (httpCode == HTTP_CODE_OK)
@@ -1457,7 +1484,6 @@ void getCityWeater()
     indexStart = str.indexOf("\"f\":[");
     indexEnd = str.indexOf(",{\"fa");
     String jsonFC = str.substring(indexStart + 5, indexEnd);
-    // Serial.println(jsonFC);
 
     weaterData(&jsonCityDZ, &jsonDataSK, &jsonFC);
     Serial.println("获取成功");
@@ -1466,27 +1492,32 @@ void getCityWeater()
   {
     Serial.print("请求城市天气错误：");
     Serial.println(httpCode);
+
+    String City4False = "{\"city\":\"湛江\",\"cityname\":\"zhanjiang\",\"temp\":\"999\",\"tempn\":\"29\",\"weather\":\"等待更新\",\"wd\":\"等待更新\",\"ws\":\"等待更新\",\"weathercode\":\"d1\",\"weathercoden\":\"n3\",\"fctime\":\"202306220800\"}";
+    String DataSK4False = "{\"nameen\":\"zhanjiang\",\"cityname\":\"湛江\",\"city\":\"101281001\",\"temp\":\"00\",\"tempf\":\"00\",\"WD\":\"等待更新\",\"wde\":\"NW\",\"WS\":\"等待更新\",\"wse\":\"4km/h\",\"SD\":\"00%\",\"sd\":\"00%\",\"qy\":\"997\",\"njd\":\"13km\",\"time\":\"18:55\",\"rain\":\"0\",\"rain24h\":\"0\",\"aqi\":\"38\",\"aqi_pm25\":\"38\",\"weather\":\"等待更新\",\"weathere\":\"Cloudy\",\"weathercode\":\"d01\",\"limitnumber\":\"\",\"date\":\"等待更新\"}";
+    String FC4False = "{\"fa\":\"01\",\"fb\":\"03\",\"fc\":\"34\",\"fd\":\"27\",\"fe\":\"等待更新\",\"ff\":\"等待更新\",\"fg\":\"等待更新\",\"fh\":\"等待更新\",\"fk\":\"5\",\"fl\":\"0\",\"fm\":\"999.9\",\"fn\":\"88.9\",\"fi\":\"6/22\",\"fj\":\"今天\"}";
+    weaterData(&City4False, &DataSK4False, &FC4False);
   }
 
   // 关闭ESP8266与服务器连接
   httpClient.end();
 }
 
-//设计一个结构体，实现不同意思字显示不同颜色
-#define cRED    0
-#define cGREEN  1
-#define cWHITE  2
+// 设计一个结构体，实现不同意思字显示不同颜色
+#define cRED 0
+#define cGREEN 1
+#define cWHITE 2
 
 struct Display
 {
-   String  title = "";
-   int     color = 0;
+  String title = "";
+  int color = 0;
 };
 
 Display scrollNongLi[MaxScroll];
 
-//String scrollNongLi[MaxScroll] = {""};
-// 获取农历信息
+// String scrollNongLi[MaxScroll] = {""};
+//  获取农历信息
 void getNongli()
 {
   DynamicJsonDocument doc(1024);
@@ -1496,9 +1527,9 @@ void getNongli()
   // String M = month() < 10 ? "0" + String(month()) : String(month());
   // String D = day() < 10 ? "0" + String(day()) : String(day());
 
-   String Y = String(rtc.getYear());
-   String M = rtc.getMonth() + 1 < 10 ? "0" + String(rtc.getMonth() + 1) : String(rtc.getMonth() + 1);
-   String D = rtc.getDay() < 10 ? "0" + String(rtc.getDay()) : String(rtc.getDay());
+  String Y = String(rtc.getYear());
+  String M = rtc.getMonth() + 1 < 10 ? "0" + String(rtc.getMonth() + 1) : String(rtc.getMonth() + 1);
+  String D = rtc.getDay() < 10 ? "0" + String(rtc.getDay()) : String(rtc.getDay());
 
   memset(scrollNongLi, '\0', sizeof(scrollNongLi));
   scrollNongLi[0].title = monthDay() + " " + week();
@@ -1541,14 +1572,14 @@ void getNongli()
     JsonObject root = doc.as<JsonObject>();
     JsonObject data = root["data"];
 
-    //const char *yearTips = data["yearTips"];           // 天干地支纪年法描述 例如：戊戌
-    //const char *typeDes = data["typeDes"];             // 类型描述 比如 国庆,休息日,工作日 如果ignoreHoliday参数为true，这个字段不返回
-    //const char *chineseZodiac = data["chineseZodiac"]; // 属相
-    //const char *solarTerms = data["solarTerms"];       // 节气
-    //const char *lunarCalendar = data["lunarCalendar"]; // 农历
-    const char *suit = data["suit"];                   // 今日宜
-    //const char *weekOfYear = data["weekOfYear"];       // 第几周
-    const char *avoid = data["avoid"];                 // 今日忌
+    // const char *yearTips = data["yearTips"];           // 天干地支纪年法描述 例如：戊戌
+    // const char *typeDes = data["typeDes"];             // 类型描述 比如 国庆,休息日,工作日 如果ignoreHoliday参数为true，这个字段不返回
+    // const char *chineseZodiac = data["chineseZodiac"]; // 属相
+    // const char *solarTerms = data["solarTerms"];       // 节气
+    // const char *lunarCalendar = data["lunarCalendar"]; // 农历
+    const char *suit = data["suit"]; // 今日宜
+    // const char *weekOfYear = data["weekOfYear"];       // 第几周
+    const char *avoid = data["avoid"]; // 今日忌
 
     scrollNongLi[1].title = data["yearTips"].as<String>() + "年 " + data["lunarCalendar"].as<String>();
     scrollNongLi[1].color = cWHITE;
@@ -1586,7 +1617,8 @@ void getNongli()
         Serial.println("suit字符串太大。");
       }
     }
-    else{
+    else
+    {
       scrollNongLi[needle].title = "宜:";
       scrollNongLi[needle].color = cWHITE;
     }
@@ -1615,7 +1647,8 @@ void getNongli()
         Serial.println("avoid字符串太大。");
       }
     }
-    else{
+    else
+    {
       scrollNongLi[needle].title = "忌:";
       scrollNongLi[needle].color = cRED;
     }
@@ -1847,7 +1880,7 @@ void scrollDate()
     // 把xxx.vlw放在platfomio项目下创建的data目录
     // 把vlw文件上传到单片机的flash空间中
     // 然后在这里调用
-    //clk.loadFont("msyh20", LittleFS);
+    // clk.loadFont("msyh20", LittleFS);
     clk.loadFont("msyhbd20", LittleFS);
     // clk.loadFont(diansong20);
 
@@ -1855,31 +1888,32 @@ void scrollDate()
     clk.createSprite(162, 30);
     clk.fillSprite(bgColor);
     clk.setTextDatum(CC_DATUM);
-    //clk.setTextColor(TFT_WHITE, bgColor);
+    // clk.setTextColor(TFT_WHITE, bgColor);
 
-    //Serial.println("currentD:" + String(CurrentDisDate) + ":" + scrollNongLi[CurrentDisDate] );
+    // Serial.println("currentD:" + String(CurrentDisDate) + ":" + scrollNongLi[CurrentDisDate] );
 
-    if (scrollNongLi[CurrentDisDate].title != ""){
+    if (scrollNongLi[CurrentDisDate].title != "")
+    {
 
       switch (scrollNongLi[CurrentDisDate].color)
       {
       case cRED:
-          clk.setTextColor(tft.color565(254, 67, 101), bgColor);
+        clk.setTextColor(tft.color565(254, 67, 101), bgColor);
         /* code */
         break;
       case cGREEN:
-          clk.setTextColor(TFT_GREEN, bgColor);
+        clk.setTextColor(TFT_GREEN, bgColor);
         /* code */
         break;
       case cWHITE:
-          clk.setTextColor(TFT_WHITE, bgColor);
+        clk.setTextColor(TFT_WHITE, bgColor);
         /* code */
         break;
 
       default:
         break;
       }
-      clk.drawString(scrollNongLi[CurrentDisDate].title, 75, 16);      
+      clk.drawString(scrollNongLi[CurrentDisDate].title, 75, 16);
     }
     else
     {
@@ -1895,8 +1929,9 @@ void scrollDate()
     else
       CurrentDisDate += 1; // 准备切换到下一个
   }
-  else{
-      CurrentDisDate = 0; // 回第一个
+  else
+  {
+    CurrentDisDate = 0; // 回第一个
   }
 }
 
@@ -2006,7 +2041,7 @@ time_t getNtpTime()
   {
     timeClient.update();
     // return timeClient.getFormattedTime();
-    Serial.println(rtc.getTime("%A, %B %d %Y %H:%M:%S"));      // (String) returns time with specified format
+    Serial.println(rtc.getTime("%A, %B %d %Y %H:%M:%S")); // (String) returns time with specified format
     return timeClient.getEpochTime();
   }
   return 0;
@@ -2109,7 +2144,7 @@ void sleepTimeLoop(uint8_t Maxlight, uint8_t Minlight)
       if (!isSleepMode)
       {
         isSleepMode = true; // 标记进入睡眠模式
-        bLight = Minlight;        // 调小LED背光
+        bLight = Minlight;  // 调小LED背光
       }
     }
     else
@@ -2138,7 +2173,7 @@ void sleepTimeLoop(uint8_t Maxlight, uint8_t Minlight)
       if (!isSleepMode)
       {
         isSleepMode = true; // 标记进入睡眠模式
-        bLight = Minlight;         // 调小LED背光
+        bLight = Minlight;  // 调小LED背光
       }
     }
   }
@@ -2212,4 +2247,3 @@ int StrSplit(String str, String fen, String *result)
 //     struct timeval now = { .tv_sec = timeSinceEpoch };
 //     settimeofday(&now, NULL);
 // }
-
