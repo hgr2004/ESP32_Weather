@@ -68,16 +68,6 @@
 #include <LittleFS.h>
 #define FlashFS LittleFS
 
-/* *****************************************************************
- *  试验区，用来放置一些试验用的代码
- *
- * ****************************************************************/
-
-/* *****************************************************************
- *  试验区结束
- *
- * ****************************************************************/
-
 #define Version "SDD V1.3.4"
 #define MaxScroll 50 // 定义最大滚动显示条数
 /* *****************************************************************
@@ -92,17 +82,8 @@
 
 #if WM_EN
 #include <WiFiManager.h>
-// #include <esp_wifi.h>
-// #include <WiFi.h>
-// #include <WiFiClient.h>
-// #include <ESPmDNS.h>
-// From v1.1.0
-// #include <WiFiMulti.h>
-// WiFiMulti wifiMulti;
 // WiFiManager 参数
 WiFiManager wm; // global wm instance
-// ESP_WiFiManager wm;
-// WiFiManagerParameter custom_field; // global param ( for non blocking w params )
 #endif
 
 // 设定DHT11温湿度传感器引脚
@@ -310,18 +291,6 @@ void setup()
 
   Serial.begin(115200);
   delay(1000); // 花一些时间打开串行监视器
-
-  /* ***************************************************************************
-   * 试验区。用来放置一些试验代码
-   *
-   * **************************************************************************/
-
-  /* ***************************************************************************
-   * 试验区结束
-   *
-   * **************************************************************************/
-
-  // Serial.begin(115200);
   EEPROM.begin(1024);
 
   // 增加蓝牙串口功能
@@ -354,8 +323,6 @@ void setup()
   if (EEPROM.read(Ro_addr) >= 0 && EEPROM.read(Ro_addr) <= 3)
     LCD_Rotation = EEPROM.read(Ro_addr);
 
-  // pinMode(LCD_BL_PIN, OUTPUT);
-  // analogWrite(LCD_BL_PIN, 1023 - (LCD_BL_PWM*10));
   ledcAnalogWrite(pwm_channel0, LCD_BL_PWM);
 
   tft.begin();          /* TFT init */
@@ -369,11 +336,10 @@ void setup()
   if (!LittleFS.begin())
   {
     Serial.println("Flash FS initialisation failed!");
-    // while (1) yield(); // Stay here twiddling thumbs waiting
   }
   else
   {
-    Serial.println("\n\\Flash FS available!");
+    Serial.println("Flash FS available!");
   }
 
   // bool font_missing = false;
@@ -449,7 +415,7 @@ void setup()
   Udp.begin(localPort);
   Serial.println("等待同步...");
 
-  // 每60秒同步时间一次
+  // 每 60 * 60 秒同步时间一次
   timeClient.begin();
   setSyncProvider(getNtpTime);
   setSyncInterval(60 * 60);   //每1小时同步一次时间
@@ -459,8 +425,7 @@ void setup()
   while (rtc.getYear() == 1970)
   {
     if (Maxtry > 10){
-      Serial.println("获取NTP时间失败，手动设置一个时间：2023-6-18-1-1-1");
-      //MansetTime(01,01,01,18,06,2023); //如果同步失败，手动设置一个系统时间。
+      Serial.println("获取NTP时间失败，手动设置一个时间：2023-6-18-1-1-1"); //如果同步失败，手动设置一个系统时间。
       rtc.setTime(01, 01, 01, 18, 6, 2023);  // 17th Jan 2021 15:24:30
       break;      
     }
@@ -471,13 +436,18 @@ void setup()
     Maxtry++;
   }
 
-  //Serial.println((String)year()+ "/" + (String)month() + "/" + (String)day() + "/" + (String)hour() +  "/" + (String)minute() + "/" + (String)second());
-  //Serial.println(rtc.getTime("%A, %B %d %Y %H:%M:%S"));      // (String) returns time with specified format
-
+  //开始相关显示
+  tft.fillScreen(TFT_BLACK); // 清屏
+//显示温湿度图标和方框
   TJpgDec.setJpgScale(1);
   TJpgDec.setSwapBytes(true);
   TJpgDec.setCallback(tft_output);
 
+  TJpgDec.drawJpg(31, 183, temperature, sizeof(temperature)); // 温度图标
+  TJpgDec.drawJpg(50, 200, humidity, sizeof(humidity));       // 湿度图标
+  tft.drawRoundRect(170, 112, 66, 48, 5, TFT_YELLOW);         // 室内温湿度框
+
+  //获取城市代码
   int CityCODE = 0;
   for (int cnum = 5; cnum > 0; cnum--)
   {
@@ -489,12 +459,6 @@ void setup()
     cityCode = CityCODE;
   else
     getCityCode(); // 获取城市代码
-
-  tft.fillScreen(TFT_BLACK); // 清屏
-
-  TJpgDec.drawJpg(31, 183, temperature, sizeof(temperature)); // 温度图标
-  TJpgDec.drawJpg(50, 200, humidity, sizeof(humidity));       // 湿度图标
-  tft.drawRoundRect(170, 112, 66, 48, 5, TFT_YELLOW);         // 室内温湿度框
 
   getCityWeater(); // 取天气情况
   getNongli();     // 农历信息
@@ -1407,10 +1371,35 @@ void getCityCode()
     int aa = str.indexOf("id=");
     if (aa > -1)
     {
+      unsigned int CityCODE = 0;
       // cityCode = str.substring(aa+4,aa+4+9).toInt();
-      cityCode = str.substring(aa + 4, aa + 4 + 9);
+      unsigned int CityC = str.substring(aa + 4, aa + 4 + 9).toInt();
       Serial.println("CityCode:" + cityCode);
-      //getCityWeater();
+
+      if (CityC >= 101000000 && CityC <= 102000000 || CityC == 0)
+      {
+        for (int cnum = 0; cnum < 5; cnum++)
+        {
+          EEPROM.write(CC_addr + cnum, CityC % 100); // 城市地址写入城市代码
+          EEPROM.commit();                           // 保存更改的数据
+          CityC = CityC / 100;
+          delay(5);
+        }
+        for (int cnum = 5; cnum > 0; cnum--)
+        {
+          CityCODE = CityCODE * 100;
+          CityCODE += EEPROM.read(CC_addr + cnum - 1);
+          delay(5);
+        }
+
+        cityCode = CityCODE;
+      }
+      else
+      {
+        Serial.println("城市代码格式错误，获取城市代码失败");
+      }
+
+      // getCityWeater();
     }
     else
     {
