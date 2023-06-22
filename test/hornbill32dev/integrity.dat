@@ -1,0 +1,8 @@
+adafruit/Adafruit Unified Sensor@^1.1.9
+lorol/LittleFS_esp32@^1.0.6
+paulstoffregen/Time@^1.6.1
+bodmer/TFT_eSPI@^2.5.30
+adafruit/DHT sensor library@^1.4.4
+bodmer/TJpg_Decoder@^1.0.8
+bblanchon/ArduinoJson@^6.21.2
+arduino-libraries/NTPClient@^3.2.1
