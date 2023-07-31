@@ -237,7 +237,7 @@ byte loadNum = 6;
 
 /* 创建任务一和任务二的句柄，并初始化 */
 TaskHandle_t TASK_HandleWH = NULL;
-TaskHandle_t TASK_HandleNL = NULL;
+TaskHandle_t TASK_HandleIndoor = NULL;
 
 /* *********************************************************/
 /*  ***************函数定义**********************************/
@@ -249,7 +249,6 @@ void scrollBanner();
 void scrollDate();
 void imgAnim();
 void weaterData(String *cityDZ, String *dataSK, String *dataFC);
-void getCityWeater();
 String monthDay();
 String week();
 void getNongli();
@@ -279,8 +278,8 @@ void IndoorTem();
 void Serial_set();
 void sleepTimeLoop(uint8_t Maxlight, uint8_t Minlight);
 void BluetoothProc();
-void TaskWH( void *param );
-void TaskNL( void *param );
+void TaskWH(void *param);
+void TaskNL(void *param);
 
 /* *********************************************************/
 /*  ********************************************************/
@@ -468,39 +467,46 @@ void setup()
   else
     getCityCode(); // 获取城市代码
 
-/* ********************************************************
-xTaskCreatePinnedToCore() 函数有 7 个参数：
-实现任务的函数名（task1）
-任务的任何名称（“task1”等）
-以字为单位分配给任务的堆栈大小（1 个字=2 字节）
-任务输入参数（可以为NULL）
-任务的优先级（0为最低优先级）
-任务句柄（可以为 NULL）
-任务将运行的核心 ID（0 或 1）
-* *********************************************************/
-
-  //分别在两个核心里面共创建2个任务，用来取天气和农历信息
-  xTaskCreatePinnedToCore(TaskWH, "Task_Weather", 3 * 8 * 1024, NULL, 1, &TASK_HandleWH, 0);
-  xTaskCreatePinnedToCore(TaskNL, "Task_Nongli", 3 * 8 * 1024, NULL, 1, &TASK_HandleNL, 1);
-
+  
   // getCityWeater(); // 取天气情况
-  // getNongli();     // 农历信息
+  getNongli(); // 农历信息
 
-  if (WiFi.status() == WL_CONNECTED)
-  {
+  /* ********************************************************
+  xTaskCreatePinnedToCore() 函数有 7 个参数：
+  实现任务的函数名（task1）
+  任务的任何名称（“task1”等）
+  以字为单位分配给任务的堆栈大小（1 个字=2 字节）
+  任务输入参数（可以为NULL）
+  任务的优先级（0为最低优先级）
+  任务句柄（可以为 NULL）
+  任务将运行的核心 ID（0 或 1）
+  在使用WIFI或蓝牙的情况下，请不要调用核心0，不然会影响通讯。
+  * *********************************************************/
 
-    if (WiFi.getSleep())
-    {
-      Serial.println("WIFI休眠成功......");
-      Wifi_en = 0;
-    }
-    else
-      Serial.println("WIFI休眠失败......");
-  }
+  // 分别在两个核心里面共创建2个任务，用来取天气和农历信息
+  xTaskCreatePinnedToCore(TaskWH, "Task_Weather", 2 * 1024, NULL, 3, &TASK_HandleWH, 1);
+  xTaskCreatePinnedToCore(TaskNL, "Task_Nongli", 1024, NULL, 2, &TASK_HandleIndoor, 1);
+
+  //   if (WiFi.status() == WL_CONNECTED)
+  //   {
+
+  //     if (WiFi.getSleep())
+  //     {
+  //       Serial.println("WIFI休眠成功......");
+  //       Wifi_en = 0;
+  //     }
+  //     else
+  //       Serial.println("WIFI休眠失败......");
+  //   }
 }
 
 void loop()
 {
+  // while (1)
+  // {
+  //   delay(1);
+  // }
+
   LCD_reflash(0);
   Serial_set();
   sleepTimeLoop(LCD_BL_PWM, 120); // 定时开关显示屏背光 参数是打开后最大亮度
@@ -511,18 +517,43 @@ void loop()
  *  以下各类函数
  *
  * **************************************************************************/
-void TaskWH( void *param ){
-  Serial.print("getCityWeater() 函数在核心上运行："); 
-  //Serial.println(xPortGetCoreID()); 
+
+unsigned long uxTaskWaterMark;
+
+void TaskWH(void *param)
+{
+  Serial.print("getCityWeater() 函数在核心上运行：");
+  Serial.println(xPortGetCoreID());
   getCityWeater(); // 取天气情况
-  vTaskDelete( TASK_HandleWH );
+
+  uxTaskWaterMark = uxTaskGetStackHighWaterMark( NULL );
+  Serial.print("堆栈剩余字节：");
+  Serial.println(uxTaskWaterMark);
+
+  vTaskDelete(TASK_HandleWH);
 }
- 
-void TaskNL( void *param ){
-  Serial.print("getNongli() 函数在核心上运行："); 
-  Serial.println(xPortGetCoreID()); 
-  getNongli();     // 农历信息
-  vTaskDelete( TASK_HandleNL );
+
+void TaskNL(void *param)
+{
+  Serial.print("getNongli() 函数在核心上运行：");
+  Serial.println(xPortGetCoreID());
+
+while (1)
+{
+  // 一分钟更新一次室内温度
+#if DHT_EN
+  if (second() % 60 == 0)
+  {
+    IndoorTem();
+    Serial.println(ESP.getFreeHeap());
+  }
+#endif  
+
+}
+
+
+
+  //vTaskDelete(TASK_HandleIndoor);
 }
 
 void IRAM_ATTR onTimer()
@@ -1307,15 +1338,15 @@ void LCD_reflash(int en)
     prevTime = 0;
   }
 
-  // 一分钟更新一次室内温度
-#if DHT_EN
-  if (second() % 60 == 0 && prevTime == 0 || en == 1)
-  {
+  //   // 一分钟更新一次室内温度
+  // #if DHT_EN
+  //   if (second() % 60 == 0 && prevTime == 0 || en == 1)
+  //   {
 
-    if (DHT_img_flag != 0)
-      IndoorTem();
-  }
-#endif
+  //     if (DHT_img_flag != 0)
+  //       IndoorTem();
+  //   }
+  // #endif
   // 两秒钟更新一次
   if (second() % 2 == 0 && prevTime == 0 || en == 1)
   {
@@ -1331,7 +1362,7 @@ void LCD_reflash(int en)
     if (WiFi.status() == WL_CONNECTED)
     {
       Serial.println("WIFI已连接");
-      getCityWeater();
+      // getCityWeater();
       if (UpdateWeater_en != 0)
         UpdateWeater_en = 0;
       weaterTime = millis();
@@ -1354,7 +1385,7 @@ void LCD_reflash(int en)
   {
     if (haveNL == 0)
     {
-      getNongli();
+      // getNongli();
       haveNL = 1;
     }
   }
@@ -1520,7 +1551,7 @@ Display scrollNongLi[MaxScroll];
 //  获取农历信息
 void getNongli()
 {
-  DynamicJsonDocument doc(1024);
+  DynamicJsonDocument doc(512);
   String id = "ukyvqbejoesbxpqk";
   String secret = "dGltRE9zenJCZWFLUWZOVSs3Rm42dz09";
   // String Y = String(year());
@@ -1701,7 +1732,7 @@ String scrollText[7];
 void weaterData(String *cityDZ, String *dataSK, String *dataFC)
 {
   // 解析第一段JSON
-  DynamicJsonDocument doc(1024);
+  DynamicJsonDocument doc(512);
   deserializeJson(doc, *dataSK);
   JsonObject sk = doc.as<JsonObject>();
 
