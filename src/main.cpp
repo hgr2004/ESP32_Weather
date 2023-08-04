@@ -83,12 +83,12 @@
  *  请前往相关的网站申请key
  * *****************************************************************/
 // 和风天气的key 申请地址： https://dev.qweather.com/docs/start/
-String HeUserKey = "e457a7ec78ac4f99b9fb02ac368b3cfd"; 
+String HeUserKey = ""; 
 WeatherWarn weatherWarn;
 
 //电点工作室/mxnzp.com  申请地址：https://www.mxnzp.com/   一个个人维护的站点
-String mx_id = "ukyvqbejoesbxpqk";
-String mx_secret = "dGltRE9zenJCZWFLUWZOVSs3Rm42dz09";
+String mx_id = "";
+String mx_secret = "";
 
 /* *****************************************************************
  *  配置使能位
