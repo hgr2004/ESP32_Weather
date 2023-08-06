@@ -1313,6 +1313,11 @@ void LCD_reflash(bool en)
 // 取得和风天气的预警信息
 void getWarning()
 {
+  if (WiFi.status() != WL_CONNECTED){
+    Serial.println("Error:WiFi is not Connected.");
+    return;    
+  }
+
   isNewWarn = false;
   scrollText[6] = "";
 
@@ -1445,6 +1450,11 @@ void DispWarn(int en)
 // 发送HTTP请求并且将服务器响应通过串口输出
 void getCityCode()
 {
+  if (WiFi.status() != WL_CONNECTED){
+    Serial.println("Error:WiFi is not Connected.");
+    return;    
+  }
+
   String URL = "http://wgeo.weather.com.cn/ip/?_=" + String(rtc.getEpoch());
   // 创建 HTTPClient 对象
   HTTPClient httpClient; // 定义http客户端
@@ -1519,6 +1529,11 @@ void getCityCode()
 // 获取城市天气
 void getCityWeater()
 {
+  if (WiFi.status() != WL_CONNECTED){
+    Serial.println("Error:WiFi is not Connected.");
+    return;    
+  }
+
   String jsonCityDZ = "";
   String jsonDataSK = "";
   String jsonFC = "";
@@ -1612,6 +1627,11 @@ void getCityWeater()
 //  获取农历信息
 void getNongli()
 {
+  if (WiFi.status() != WL_CONNECTED){
+    Serial.println("Error:WiFi is not Connected.");
+    return;    
+  }
+
   Serial.println("获取农历信息．．．");
   DynamicJsonDocument doc(1024);
 
@@ -2832,6 +2852,10 @@ void Web_Sever_Init()
 // Web网页设置函数
 void Web_Sever()
 {
+  if (WiFi.status() != WL_CONNECTED){
+    Serial.println("Error:WiFi is not Connected.");
+    return;    
+  }
   // MDNS.update();
   server.handleClient();
 }
