@@ -1076,8 +1076,8 @@ void Webconfig()
   //  wm.setShowStaticFields(true); // force show static ip fields
   //  wm.setShowDnsFields(true);    // force show dns field always
 
-  // wm.setConnectTimeout(20); // how long to try to connect for before continuing
-  //  wm.setConfigPortalTimeout(30); // auto close configportal after n seconds
+  wm.setConnectTimeout(60); // how long to try to connect for before continuing
+  wm.setConfigPortalTimeout(120); // auto close configportal after n seconds
   // wm.setCaptivePortalEnable(false); // disable captive portal redirection
   // wm.setAPClientCheck(true); // avoid timeout if client connected to softap
 
@@ -1776,6 +1776,13 @@ void getNongli()
       return;
     }
     JsonObject root = doc.as<JsonObject>();
+ 
+    if(doc["code"].as<int>() != 1){
+      Serial.print(F("data is  wrong: "));
+      Serial.println(doc["code"].as<int>());   
+      return;
+    }
+
     JsonObject data = root["data"];
 
     const char *suit = data["suit"];   // 今日宜
