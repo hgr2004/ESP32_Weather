@@ -197,7 +197,7 @@ int prevTime = 1;            // 滚动显示更新标志位
 int DHT_img_flag = 0;        // DHT传感器使用标志位
 bool UpdateScreen = 0;       // 全部重画屏幕
 
-time_t prevDisplay = 0;       // 显示时间显示记录
+int prevDisplay = 0;       // 显示时间显示记录
 unsigned long weaterTime = 0; // 天气更新时间记录
 
 String scrollText[7] = {""}; // 天气情况滚动显示数组
@@ -1235,9 +1235,9 @@ void LCD_reflash(bool en)
   }
 
   // 绘制时分秒
-  if (now() != prevDisplay || en == 1)
+  if (rtc.getSecond() != prevDisplay || en == 1)
   {
-    prevDisplay = now();
+    prevDisplay = rtc.getSecond();
     digitalClockDisplay(en);
   }
 
@@ -1290,7 +1290,7 @@ void LCD_reflash(bool en)
    *    1显示scrollDate  2显示scrollBanner    显示完后：1切到3  2切到4   定时到后：3切到2  4切到1  实现定时切换轮播*
    ************************************************************************************************************/
   //  定时器计数 用来定时滚动显示 秒
-  if (updateTime > 2)
+  if (updateTime > 1)
   {
     updateTime = 0;
 
@@ -1635,7 +1635,7 @@ void getNongli()
   Serial.println("获取农历信息．．．");
   DynamicJsonDocument doc(1024);
 
-  TotalHEAD = 3;
+  TotalHEAD = 4;
   scrolHEAD = new Display[TotalHEAD];
 
   if (scrolHEAD == NULL)
@@ -1792,6 +1792,8 @@ void getNongli()
     scrolHEAD[1].color = cWHITE;
     scrolHEAD[2].title = data["chineseZodiac"].as<String>() + "年" + data["weekOfYear"].as<String>() + "周" + " " + data["typeDes"].as<String>();
     scrolHEAD[2].color = cWHITE;
+    scrolHEAD[3].title = "今日" + data["solarTerms"].as<String>(); 
+    scrolHEAD[3].color = cWHITE;
 
     // 宜忌有时描述太长，分行显示
     String *rword = NULL;
