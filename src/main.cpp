@@ -42,6 +42,7 @@
  *  库文件、头文件
  * *****************************************************************/
 #include <Arduino.h>
+#include "main.h"
 #include <string.h>
 #include "ArduinoJson.h"
 #include <TimeLib.h>
@@ -75,9 +76,14 @@
 #include <FS.h>
 #include <LittleFS.h>
 #define FlashFS LittleFS
+#define FORMAT_LITTLEFS_IF_FAILED true
 
-#define Version "SDD V1.8.8"
+#define Version "SDD V1.9.9"
 #define MaxScroll 50 // 定义最大滚动显示条数
+
+#define UseMutex    //多任务使用变量互斥
+SemaphoreHandle_t shared_var_mutex_a = NULL;
+SemaphoreHandle_t shared_var_mutex_b = NULL;
 
 /* *****************************************************************
  *  请前往相关的网站申请key
@@ -332,6 +338,7 @@ void fillArc(int x, int y, int start_angle, int seg_count, int rx, int ry, int w
 unsigned int brightness(unsigned int colour, int brightness);
 unsigned int rainbow(byte value);
 void SaveConfigCallback();
+void dispScrolls();
 
 #if WebSever_EN
 void Web_Sever_Init();
@@ -361,7 +368,7 @@ void setup()
   TJpgDec.setSwapBytes(true);
   TJpgDec.setCallback(tft_output);
 
-  if (!LittleFS.begin())
+  if (!FlashFS.begin(! FORMAT_LITTLEFS_IF_FAILED))
   {
     Serial.println("Flash FS initialisation failed!");
   }
@@ -370,7 +377,7 @@ void setup()
     Serial.println("Flash FS available!");
   }
   // 显示开机LOGO
-  TJpgDec.drawFsJpg(0, 0, "/logo.jpg", LittleFS);
+  TJpgDec.drawFsJpg(0, 0, "/logo.jpg", FlashFS);
   delay(3000); // 花一些时间打开串行监视器
 
   EEPROM.begin(1024);
@@ -383,7 +390,7 @@ void setup()
   // 设置一个定时器处理定时任务 1秒
   timer = timerBegin(0, 80, true);             // 初始化定时器指针
   timerAttachInterrupt(timer, &onTimer, true); // 绑定定时器
-  timerAlarmWrite(timer, 1000000, true);       // 配置报警计数器保护值（就是设置时间）单位uS
+  timerAlarmWrite(timer, 100000, true);       // 配置报警计数器保护值（就是设置时间）单位uS 定时100ms
   timerAlarmEnable(timer);                     // 启用定时器
 
 #if DHT_EN
@@ -532,8 +539,11 @@ void setup()
 #endif  
 
   // 任务A用来采集DHT11的温度湿度 tskNO_AFFINITY 表示不指定核心
-  xTaskCreatePinnedToCore(taskA, "Task A", 1600 * 1, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(taskB, "Task B", 1024 * 2, NULL, 1, NULL, 1);
+   shared_var_mutex_a = xSemaphoreCreateMutex(); // Create the mutex
+   shared_var_mutex_b = xSemaphoreCreateMutex(); // Create the mutex
+
+  xTaskCreatePinnedToCore(taskA, "Task A", 1024 * 2, NULL, 3, NULL, 1);
+  xTaskCreatePinnedToCore(taskB, "Task B", 1024 * 3, NULL, 2, NULL, 1);  //configMAX_PRIORITIES - 1
   tft.fillScreen(TFT_BLACK); // 清屏
 }
 
@@ -546,7 +556,6 @@ void loop()
   Serial_set();
   DispWarn(isNewWarn);
 }
-
   // Serial.println("check 1:");
   // Serial.println(ESP.getFreeHeap());
 
@@ -557,14 +566,25 @@ void loop()
 // 任务A用来采集DHT11的温度湿度
 void taskA(void *ptParam)
 {
-
   TickType_t xLastWakeTime;
-  const TickType_t xDelayms = pdMS_TO_TICKS(10000); // 10秒钟采一次
+  const TickType_t xDelayms = pdMS_TO_TICKS(3000); // 3秒钟采一次
   xLastWakeTime = xTaskGetTickCount();
   while (1)
   {
     vTaskDelayUntil(&xLastWakeTime, xDelayms);
-    getDHT11();
+    #ifdef UseMutex
+    SmartLocker smartLocker(&shared_var_mutex_a, portMAX_DELAY);
+    if(smartLocker.IsLocked())
+    {
+    #endif
+    getDHT11();                           //采集DHT11温湿度传感器
+    sleepTimeLoop(LCD_BL_PWM, MINLIGHT); // 定时开关显示屏背光 参数是打开后最大亮度
+    //printf("TaskA剩余栈%d\r\n", uxTaskGetStackHighWaterMark(NULL)); // uxTaskGetStackHighWaterMark以word为单位
+    // Serial.print("taskA: priority = ");
+    // Serial.println(uxTaskPriorityGet(NULL));
+    #ifdef UseMutex
+    }
+    #endif
   }
 }
 
@@ -572,15 +592,30 @@ void taskA(void *ptParam)
 void taskB(void *ptParam)
 {
   TickType_t xLastWakeTime;
-  const TickType_t xDelayms = pdMS_TO_TICKS(1000); // 1000ms
+  const TickType_t xDelayms = pdMS_TO_TICKS(100); // 1000ms
   xLastWakeTime = xTaskGetTickCount();
   while (1)
   {
     vTaskDelayUntil(&xLastWakeTime, xDelayms);
-    sleepTimeLoop(LCD_BL_PWM, MINLIGHT); // 定时开关显示屏背光 参数是打开后最大亮度
-    // printf("TaskB剩余栈%d\r\n", uxTaskGetStackHighWaterMark(NULL)); // uxTaskGetStackHighWaterMark以word为单位
+    // 绘制时分秒
+    #ifdef UseMutex
+    SmartLocker smartLocker(&shared_var_mutex_b, portMAX_DELAY);
+    if(smartLocker.IsLocked())
+    {
+    #endif
+    if((! isNewWarn) && (isNewWeather == 0) && (UpdateWeater_en == 0)){
+       digitalClockDisplay(UpdateScreen);
+       imgAnim();      
+    }
+
+    #ifdef UseMutex
+    }
+    #endif    
+    //printf("TaskB剩余栈%d\r\n", uxTaskGetStackHighWaterMark(NULL)); // uxTaskGetStackHighWaterMark以word为单位
     // printf("xPortGetFreeHeapSize = %d\r\n", xPortGetFreeHeapSize());
     // printf("xPortGetMinimumEverFreeHeapSize = %d\r\n", xPortGetMinimumEverFreeHeapSize());
+    // Serial.print("taskB: priority = ");
+    // Serial.println(uxTaskPriorityGet(NULL));
   }
 }
 
@@ -641,7 +676,6 @@ bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap)
   // Return 1 to decode next block
   return 1;
 }
-
 // 进度条函数
 void loading(byte delayTime) // 绘制进度条
 {
@@ -962,7 +996,7 @@ void Serial_set()
 void Wait_win(String showStr)
 {
   clk.setColorDepth(8);
-  clk.loadFont("msyhbd20", LittleFS);
+  clk.loadFont("msyhbd20", FlashFS);
   clk.createSprite(200, 100);                         // 创建窗口
   clk.fillSprite(0x0000);                             // 填充率
   clk.drawRoundRect(0, 0, 200, 16, 8, 0xFFFF);        // 空心圆角矩形
@@ -1135,6 +1169,7 @@ void saveParamCallback()
   // 城市代码
   Serial.print("CityCode = ");
   Serial.println(cc);
+  cc = (cc == 101281001) ? 101281009 : cc; // 湛江的代码改为霞山代码，解决湛江的代码取不到其他区的预警信号
   if (cc >= 101000000 && cc <= 102000000 || cc == 0)
   {
     for (int cnum = 0; cnum < 5; cnum++)
@@ -1214,8 +1249,8 @@ bool haveNL = 0; // 每天凌晨更新农历
 void LCD_reflash(bool en)
 {
   // 更新天气情况和预警情况
-  if (millis() - weaterTime > (60000 * updateweater_time) || UpdateWeater_en == 1)
-  { // 20分钟更新一次天气
+  if (UpdateWeater_en == 1)
+  { 
     if (WiFi.status() == WL_CONNECTED)
     {
       Serial.println("WIFI已连接");
@@ -1223,7 +1258,6 @@ void LCD_reflash(bool en)
       getWarning(); // 取当前预警
       if (UpdateWeater_en == 1)
         UpdateWeater_en = 0;
-      weaterTime = millis();
     }
   }
   if (isNewWeather)
@@ -1235,11 +1269,11 @@ void LCD_reflash(bool en)
   }
 
   // 绘制时分秒
-  if (rtc.getSecond() != prevDisplay || en == 1)
-  {
-    prevDisplay = rtc.getSecond();
-    digitalClockDisplay(en);
-  }
+  // if (rtc.getSecond() != prevDisplay || en == 1)
+  // {
+  //   prevDisplay = rtc.getSecond();
+  //   digitalClockDisplay(en);
+  // }
 
   // 绘制室内温度
 #if DHT_EN
@@ -1248,21 +1282,16 @@ void LCD_reflash(bool en)
 #endif
 
   // 绘制太空人
-  imgAnim();
-  // 滚动显示天气情况和黄历
-  switch (prevTime)
-  {
-  case 1:
-    scrollDate();
-    prevTime = 3;
-    break;
-  case 2:
-    scrollBanner();
-    prevTime = 4;
-    break;
-  default:
-    break;
+  //imgAnim();
+  //显示上下两个滚动字幕
+  dispScrolls();
+
+  // 20分钟更新一次天气
+  if(millis() - weaterTime > (60000 * updateweater_time)){
+    UpdateWeater_en = 1;
+    weaterTime = millis();
   }
+
   // 每天凌晨8分更新一下农历信息
   if ((rtc.getHour(true) == 0 && rtc.getMinute() == 8))
   {
@@ -1282,15 +1311,35 @@ void LCD_reflash(bool en)
   {
     haveNL = 0;
   }
-
+  UpdateScreen = 0;
+}
+//滚动显示两个字幕
+void dispScrolls()
+{
   /***********************************************************************************************************
    * 做一个双状态切换  1 -> 3
    *                    X
    *                 2  -> 4
    *    1显示scrollDate  2显示scrollBanner    显示完后：1切到3  2切到4   定时到后：3切到2  4切到1  实现定时切换轮播*
    ************************************************************************************************************/
-  //  定时器计数 用来定时滚动显示 秒
-  if (updateTime > 1)
+
+  // 滚动显示天气情况和黄历
+  switch (prevTime)
+  {
+  case 1:
+    scrollDate();
+    prevTime = 3;
+    break;
+  case 2:
+    scrollBanner();
+    prevTime = 4;
+    break;
+  default:
+    break;
+  }
+
+  //  定时器计数 用来定时滚动显示 秒 1.5S切换
+  if (updateTime > 15)
   {
     updateTime = 0;
 
@@ -1307,18 +1356,18 @@ void LCD_reflash(bool en)
       break;
     }
   }
-  UpdateScreen = 0;
+
 }
 
 // 取得和风天气的预警信息
 void getWarning()
 {
   if (WiFi.status() != WL_CONNECTED){
-    Serial.println("Error:WiFi is not Connected.");
+    Serial.println("getWarning Error:WiFi is not Connected.");
+    WiFi.reconnect();
     return;    
   }
-
-  isNewWarn = false;
+  isNewWarn = false;    
   scrollText[6] = "";
 
   if (weatherWarn.get())
@@ -1383,10 +1432,10 @@ void DispWarn(int en)
       tft.fillScreen(TFT_SILVER);
 
     String typeFile = "/png/" + String(weatherWarn.getType(), DEC) + ".svg.jpg";
-    TJpgDec.drawFsJpg(80, 10, typeFile, LittleFS);
+    TJpgDec.drawFsJpg(80, 10, typeFile, FlashFS);
 
     clk.setColorDepth(8);
-    clk.loadFont("msyhbd20", LittleFS);
+    clk.loadFont("msyhbd20", FlashFS);
     clk.createSprite(220, 26 * 2);
     clk.fillSprite(TFT_PINK);
     clk.setTextWrap(false);
@@ -1451,7 +1500,8 @@ void DispWarn(int en)
 void getCityCode()
 {
   if (WiFi.status() != WL_CONNECTED){
-    Serial.println("Error:WiFi is not Connected.");
+    Serial.println("getCitycode Error:WiFi is not Connected.");
+    WiFi.reconnect();
     return;    
   }
 
@@ -1530,7 +1580,8 @@ void getCityCode()
 void getCityWeater()
 {
   if (WiFi.status() != WL_CONNECTED){
-    Serial.println("Error:WiFi is not Connected.");
+    Serial.println("getCityweather Error:WiFi is not Connected.");
+    WiFi.reconnect();
     return;    
   }
 
@@ -1628,7 +1679,8 @@ void getCityWeater()
 void getNongli()
 {
   if (WiFi.status() != WL_CONNECTED){
-    Serial.println("Error:WiFi is not Connected.");
+    Serial.println("get NongLi Error:WiFi is not Connected.");
+    WiFi.reconnect();
     return;    
   }
 
@@ -1644,14 +1696,26 @@ void getNongli()
     return;
   }
 
+  if (scrollNongLi != NULL)
+    delete[] scrollNongLi;
+  scrollNongLi = new Display[TotalHEAD];
+  if (scrollNongLi == NULL)
+  {
+    Serial.println("new scrollNongLi fail!!");
+    return;
+  }
+  memset(scrollNongLi, '\0', TotalDis);
+
   String Y = String(rtc.getYear());
   String M = rtc.getMonth() + 1 < 10 ? "0" + String(rtc.getMonth() + 1) : String(rtc.getMonth() + 1);
   String D = rtc.getDay() < 10 ? "0" + String(rtc.getDay()) : String(rtc.getDay());
 
   memset(scrolHEAD, '\0', TotalHEAD);
 
-  scrolHEAD[0].title = monthDay() + " " + week();
-  scrolHEAD[0].color = cWHITE;
+  scrollNongLi[0].title = scrolHEAD[0].title = monthDay() + " " + week();
+  scrollNongLi[0].color = scrolHEAD[0].color = cWHITE;
+
+
 
   // https://www.mxnzp.com/api/holiday/single/20181121?ignoreHoliday=false&app_id=不再提供请自主申请&app_secret=不再提供请自主申请
   String URL = "https://www.mxnzp.com/api/holiday/single/" + Y + M + D + "?ignoreHoliday=false&app_id=" + mx_id + "&app_secret=" + mx_secret;
@@ -1917,7 +1981,7 @@ void getNongli()
     if (scrollNongLi != NULL)
       delete[] scrollNongLi;
 
-    TotalDis = TotalHEAD;
+    TotalDis = TotalHEAD = 1;
     scrollNongLi = new Display[TotalDis];
     if (scrollNongLi == NULL)
     {
@@ -2216,7 +2280,7 @@ void scrollBanner()
   if (scrollText[currentIndex] != "")
   {
     clk.setColorDepth(8);
-    scrollText[6].isEmpty() ? clk.loadFont(ZdyLwFont_20) : clk.loadFont("msyhbd20", LittleFS);
+    scrollText[6].isEmpty() ? clk.loadFont(ZdyLwFont_20) : clk.loadFont("msyhbd20", FlashFS);
 
     clk.createSprite(150, 30);
     clk.fillSprite(bgColor);
@@ -2256,7 +2320,7 @@ void scrollDate()
       // 把xxx.vlw放在platfomio项目下创建的data目录
       // 把vlw文件上传到单片机的flash空间中
       // 然后在这里调用
-      clk.loadFont("msyhbd20", LittleFS);
+      clk.loadFont("msyhbd20", FlashFS);
       // 星期
       clk.createSprite(162, 30);
       clk.fillSprite(bgColor);
@@ -2317,6 +2381,7 @@ void imgAnim()
     Anim++;
     AprevTime = millis();
   }
+  //Anim++;
   if (Anim == 10)
     Anim = 0;
 
@@ -2364,6 +2429,7 @@ unsigned char Minute_sign = 60;
 unsigned char Second_sign = 60;
 void digitalClockDisplay(int reflash_en)
 {
+    // The decoder must be given the exact name of the rendering function above
   int timey = 82;
   if (rtc.getHour(true) != Hour_sign || reflash_en == 1) // 时钟刷新
   {
@@ -2379,7 +2445,6 @@ void digitalClockDisplay(int reflash_en)
   }
   if (rtc.getSecond() != Second_sign || reflash_en == 1) // 秒钟刷新
   {
-
     if (DHT_img_flag == 1){
       dig.printfW1830(182 - 10, timey, rtc.getSecond() / 10);
       dig.printfW1830(202 - 10, timey, rtc.getSecond() % 10);      
@@ -2390,7 +2455,6 @@ void digitalClockDisplay(int reflash_en)
 
     Second_sign = rtc.getSecond();
   }
-
   if (reflash_en == 1)
     reflash_en = 0;
 }
@@ -2676,6 +2740,7 @@ void handleconfig()
     web_upt = server.arg("web_upwe_t").toInt();
     web_dhten = server.arg("web_DHT11_en").toInt();
     Serial.println("");
+    web_cc = (web_cc == 101281001) ? 101281009 : web_cc; // 湛江的代码改为霞山代码，解决湛江的代码取不到其他区的预警信号
     if (web_cc >= 101000000 && web_cc <= 102000000)
     {
       saveCityCodetoEEP(&web_cc);
@@ -2862,7 +2927,8 @@ void Web_Sever_Init()
 void Web_Sever()
 {
   if (WiFi.status() != WL_CONNECTED){
-    Serial.println("Error:WiFi is not Connected.");
+    Serial.println("Web server Error:WiFi is not Connected.");
+    WiFi.reconnect();
     return;    
   }
   // MDNS.update();
@@ -2874,7 +2940,7 @@ void Web_sever_Win()
   IPAddress IP_adr = WiFi.localIP();
 
   clk.setColorDepth(8);
-  clk.loadFont("msyhbd20", LittleFS);
+  clk.loadFont("msyhbd20", FlashFS);
   clk.createSprite(220, 100);                         // 创建窗口
   clk.fillSprite(0x0000);                             // 填充率
   clk.drawRoundRect(0, 0, 200, 16, 8, 0xFFFF);        // 空心圆角矩形
