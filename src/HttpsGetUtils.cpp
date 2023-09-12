@@ -1,7 +1,7 @@
 #include "HttpsGetUtils.h"
 #include "ArduinoUZlib.h" // gzip库
 
-uint8_t HttpsGetUtils::_buffer[1024 * 4];
+uint8_t HttpsGetUtils::_buffer[1024 * 3];
 const char *HttpsGetUtils::host = "https://devapi.qweather.com"; // 服务器地址，这是免费用户的地址，如果非免费用户，改为：https://api.qweather.com
 size_t HttpsGetUtils::_bufferSize = 0;
 
@@ -14,8 +14,8 @@ bool HttpsGetUtils::getString(const char *url, uint8_t *&outbuf, size_t &outlen)
     fetchBuffer(url); // HTTPS获取数据流
     if (_bufferSize)
     {
-        // Serial.print("buffersize:");
-        // Serial.println(_bufferSize, DEC);
+        Serial.print("buffersize:");
+        Serial.println(_bufferSize, DEC);
         ArduinoUZlib::decompress(_buffer, _bufferSize, outbuf, outlen); // GZIP解压
         _bufferSize = 0;
         return true;
@@ -33,14 +33,13 @@ bool HttpsGetUtils::fetchBuffer(const char *url)
     {
         https.addHeader("Accept-Encoding", "gzip");
         https.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0");
-
         int httpCode = https.GET();
         if (httpCode > 0)
         {
             if (httpCode == HTTP_CODE_OK)
             {
                 int len = https.getSize(); // get length of document (is -1 when Server sends no Content-Length header)
-                static uint8_t buff[128] = {0}; // create buffer for read
+                static uint8_t buff[128 * 1] = {0}; // create buffer for read
                 int offset = 0;                 // read all data from server
                 while (https.connected() && (len > 0 || len == -1))
                 {

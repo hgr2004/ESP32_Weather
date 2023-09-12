@@ -192,6 +192,7 @@ private:
       _gfx->fillRect(0, 0, _gfx->width(), _gfx->height(), bgColor);
       if (_animMode == TEXT) {
         _gfx->setTextSize(fontSize);
+        _gfx->setTextColor(textColor, bgColor);
         _gfx->setCursor(textStartX, textStartY);
         workingTextMessage = textMessage;
       } else {

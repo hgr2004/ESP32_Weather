@@ -71,28 +71,40 @@
 
 #include "WeatherWarn.h"
 #include "HttpsGetUtils.h"
+#include <Ticker.h> // 使用Ticker库，需要包含头文件
 
 // Font files are stored in Flash FS
 #include <FS.h>
 #include <LittleFS.h>
+// #include <LITTLEFS.h>
 #define FlashFS LittleFS
+// #define FlashFS LITTLEFS
 #define FORMAT_LITTLEFS_IF_FAILED true
 
 #define Version "SDD V1.9.9"
 #define MaxScroll 50 // 定义最大滚动显示条数
 
-#define UseMutex    //多任务使用变量互斥
-SemaphoreHandle_t shared_var_mutex_a = NULL;
-SemaphoreHandle_t shared_var_mutex_b = NULL;
+#define UseMutex // 多任务使用变量互斥
+SemaphoreHandle_t shared_var_mutex_pushImage = NULL;
+SemaphoreHandle_t shared_var_mutex_pushSprite = NULL;
+SemaphoreHandle_t shared_var_mutex_loop = NULL;
+
+static TaskHandle_t TaskA_Handle = NULL; /* 创建A任务句柄 */
+static TaskHandle_t TaskB_Handle = NULL; /* B任务句柄 */
+static TaskHandle_t TaskC_Handle = NULL; /* C任务句柄 */
+static TaskHandle_t TaskD_Handle = NULL; /* D任务句柄 */
+// ————————————————
+// 版权声明：本文为CSDN博主「不秃也很强」的原创文章，遵循CC 4.0 BY-SA版权协议，转载请附上原文出处链接及本声明。
+// 原文链接：https://blog.csdn.net/qq_61672347/article/details/125554394
 
 /* *****************************************************************
  *  请前往相关的网站申请key
  * *****************************************************************/
 // 和风天气的key 申请地址： https://dev.qweather.com/docs/start/
-String HeUserKey = ""; 
+String HeUserKey = "";
 WeatherWarn weatherWarn;
 
-//电点工作室/mxnzp.com  申请地址：https://www.mxnzp.com/   一个个人维护的站点
+// 电点工作室/mxnzp.com  申请地址：https://www.mxnzp.com/   一个个人维护的站点
 String mx_id = "";
 String mx_secret = "";
 
@@ -157,7 +169,7 @@ DHT dht(DHTPIN, DHTTYPE);
 #include "img/pangzi/i8.h"
 #include "img/pangzi/i9.h"
 
-int Anim = 0;      // 太空人图标显示指针记录
+int Anim = 0;                // 太空人图标显示指针记录
 unsigned long AprevTime = 0; // 太空人更新时间记录
 #endif
 
@@ -179,6 +191,7 @@ config_type wificonf = {{""}, {""}};
 // LCD屏幕相关设置
 TFT_eSPI tft = TFT_eSPI(); // 引脚请自行配置tft_espi库中的 User_Setup.h文件
 TFT_eSprite clk = TFT_eSprite(&tft);
+TFT_eSprite clkJpeg = TFT_eSprite(&tft);
 
 // 黑客帝国数字雨效果
 DigitalRainAnimation<TFT_eSPI> matrix_effect = DigitalRainAnimation<TFT_eSPI>();
@@ -197,13 +210,15 @@ int LCD_Rotation = 0;        // LCD屏幕方向
 int LCD_BL_PWM = 250;        // 屏幕亮度0-255，默认250
 uint8_t Wifi_en = 1;         // wifi状态标志位  1：打开    0：关闭
 uint8_t UpdateWeater_en = 0; // 更新时间标志位
-bool isNewWeather = false;   // 天气更新后
+uint8_t UpdateNL_en = 0;     // 更新农历标志位
+uint8_t isNewWeather = 0;    // 天气更新后
 bool isNewWarn = false;      // 预警更新标志
 int prevTime = 1;            // 滚动显示更新标志位
 int DHT_img_flag = 0;        // DHT传感器使用标志位
 bool UpdateScreen = 0;       // 全部重画屏幕
+bool finishNL = false;       // 农历取数完毕
 
-int prevDisplay = 0;       // 显示时间显示记录
+int prevDisplay = 0;          // 显示时间显示记录
 unsigned long weaterTime = 0; // 天气更新时间记录
 
 String scrollText[7] = {""}; // 天气情况滚动显示数组
@@ -219,9 +234,9 @@ int tempnum = 0;               // 温度百分比
 int huminum = 0;               // 湿度百分比
 int tempcol = 0xffff;          // 温度显示颜色
 int humicol = 0xffff;          // 湿度显示颜色
-int pm25V = 0;                     // PM2.5
+int pm25V = 0;                 // PM2.5
 int Iconsname;                 // 天气图标名称
-String cityname = "";               // 城市名称
+String cityname = "";          // 城市名称
 // 天气更新时间  默认20分钟
 int updateweater_time = 20;
 
@@ -238,17 +253,22 @@ WiFiUDP Udp;
 WiFiClient wificlient;
 unsigned int localPort = 8321;
 float duty = 0;
+bool LostWiFi = false;
 
 // NTP服务器参数
 const int timeZone = 8; // 东八区
 
-//WiFiUDP ntpUDP;
-// IPAddress NtpIP = IPAddress(210,72,145,44);  //国家授时中心
-NTPClient timeClient(Udp, "ntp.ntsc.ac.cn", 60 * 60 * timeZone, 12 * 60 *  60 * 1000);
-ESP32Time rtc; // 用来管理系统时间
+// WiFiUDP ntpUDP;
+//  IPAddress NtpIP = IPAddress(210,72,145,44);  //国家授时中心
+NTPClient timeClient(Udp, "ntp6.aliyun.com", 60 * 60 * timeZone, 12 * 60 * 60 * 1000); // ntp.ntsc.ac.cn
+ESP32Time rtc;                                                                         // 用来管理系统时间
 
-hw_timer_t *timer = NULL; // 声明一个定时器用来取NTP
+// 定时器定义
+hw_timer_t *timer = NULL; // 声明一个定时器用来定时切换字幕
 unsigned int updateTime = 0;
+
+Ticker timerDHT; // 声明一个软件定时器用来取DHT11数据
+unsigned int updateDHT = 0;
 
 // 进度条
 byte loadNum = 6;
@@ -306,7 +326,7 @@ void getNongli();
 /* *********************************************************/
 // 函数声明
 time_t getNtpTime();
-void digitalClockDisplay(int reflash_en);
+void digitalClockDisplay(int reflash_Clock);
 void printDigits(int digits);
 String num2str(int digits);
 void sendNTPpacket(IPAddress &address);
@@ -316,8 +336,12 @@ void readwificonfig();
 void deletewificonfig();
 int StrSplit(String str, String fen, String *result);
 void IRAM_ATTR onTimer();
+void IRAM_ATTR onTimer_dht();
 void ledcAnalogWrite(uint8_t channel, uint32_t value);
 bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap);
+bool tft_output_Warn(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap);
+bool tft_output_Anim(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap);
+bool tft_output_Anim2(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap);
 void Web_win();
 void Webconfig();
 void loading(byte delayTime); // 绘制进度条
@@ -326,12 +350,14 @@ void Serial_set();
 void sleepTimeLoop(uint8_t Maxlight, uint8_t Minlight);
 void taskA(void *ptParam);
 void taskB(void *ptParam);
+void taskC(void *ptParam);
+void taskD(void *ptParam);
 void getDHT11();
 void myTarProgressCallback(uint8_t progress);
 void my_strcat_arrcy(Display *arr, int lena, Display *brr, int lenb, Display *crr, int lenc, Display *str);
 String HTTPS_request(String host, String url, String parameter);
 void getWarning();
-void DispWarn(int en);
+void DispWarn();
 void Wait_win(String showStr);
 
 void fillArc(int x, int y, int start_angle, int seg_count, int rx, int ry, int w, unsigned int colour);
@@ -339,6 +365,7 @@ unsigned int brightness(unsigned int colour, int brightness);
 unsigned int rainbow(byte value);
 void SaveConfigCallback();
 void dispScrolls();
+void drawTemIcons();
 
 #if WebSever_EN
 void Web_Sever_Init();
@@ -346,6 +373,7 @@ void Web_Sever();
 void Web_sever_Win();
 void saveCityCodetoEEP(int *citycode);
 void readCityCodefromEEP(int *citycode);
+void handleconfig();
 #endif
 /* *********************************************************/
 
@@ -353,10 +381,12 @@ void setup()
 {
   Serial.begin(115200);
 
+  WiFi.enableSTA(true);
+
   setCpuFrequencyMhz(240);
   Serial.print("CPU频率是： ");
   Serial.println(getCpuFrequencyMhz());
- 
+
   tft.begin();          /* TFT init */
   tft.invertDisplay(1); // 反转所有显示颜色：1反转，0正常
   tft.setRotation(LCD_Rotation);
@@ -364,11 +394,16 @@ void setup()
   tft.fillScreen(bgColor);
   tft.setTextColor(TFT_BLACK, bgColor);
 
+  // 多任务使用变量互斥
+  shared_var_mutex_pushImage = xSemaphoreCreateMutex();  // Create the mutex
+  shared_var_mutex_pushSprite = xSemaphoreCreateMutex(); // Create the mutex
+  shared_var_mutex_loop = xSemaphoreCreateMutex();       // Create the mutex
+
   TJpgDec.setJpgScale(1);
   TJpgDec.setSwapBytes(true);
   TJpgDec.setCallback(tft_output);
 
-  if (!FlashFS.begin(! FORMAT_LITTLEFS_IF_FAILED))
+  if (!FlashFS.begin(!FORMAT_LITTLEFS_IF_FAILED))
   {
     Serial.println("Flash FS initialisation failed!");
   }
@@ -387,11 +422,14 @@ void setup()
   ledcSetup(pwm_channel0, pwm_freq, 13);
   ledcAttachPin(LCD_BL_PIN, pwm_channel0);
 
-  // 设置一个定时器处理定时任务 1秒
+  // 设置一个定时器处理定时任务 0.1秒
   timer = timerBegin(0, 80, true);             // 初始化定时器指针
   timerAttachInterrupt(timer, &onTimer, true); // 绑定定时器
-  timerAlarmWrite(timer, 100000, true);       // 配置报警计数器保护值（就是设置时间）单位uS 定时100ms
+  timerAlarmWrite(timer, 100000, true);        // 配置报警计数器保护值（就是设置时间）单位uS 定时100ms
   timerAlarmEnable(timer);                     // 启用定时器
+
+  // 设置一个软件定时器处理定时任务 10秒
+  timerDHT.attach(10, onTimer_dht); // 设置定时器，每隔 10 秒钟调用一次 DHT 函数 恢复DTH11读取任务
 
 #if DHT_EN
   dht.begin();
@@ -419,20 +457,24 @@ void setup()
       25, /* Speed Max */
       50 /* Screen Update Interval */);
 
-  targetTime = millis() + 1000;
   readwificonfig(); // 读取存储的wifi信息
   Serial.print("正在连接WIFI ");
-  Serial.println(wificonf.stassid);
+  Serial.println(String(wificonf.stassid));
 
-  WiFi.begin(wificonf.stassid, wificonf.stapsw);
-  WiFi.setAutoReconnect(true);
-  WiFi.setSleep(true);
+  if (WiFi.mode(WIFI_STA))
+  {
+    WiFi.begin(wificonf.stassid, wificonf.stapsw);
+    WiFi.setAutoReconnect(true);
+  }
+  else
+  {
+    esp_restart(); // 重启
+  }
 
   tft.fillScreen(bgColor);
   while (WiFi.status() != WL_CONNECTED)
   {
     loading(30);
-
     if (loadNum >= 197)
     {
 // 使能web配网后自动将smartconfig配网失效
@@ -462,44 +504,43 @@ void setup()
   Udp.begin(localPort);
   Serial.println("等待同步...");
 
-  timeClient.begin(); 
-  //rtc.setTime(getNtpTime());
-  
+  timeClient.begin();
+  timeClient.update();
+
   Wait_win("等待时间服务器..."); // 显示连接成功后界面
 
   loadNum = 20;
-  while(rtc.getYear() == 1970)
+  while (rtc.getYear() == 1970)
   {
-    
+
     if (millis() - AprevTime > 500) // x ms切换一次
     {
       AprevTime = millis();
-      Wait_win("正在同步时间...");        
-      //rtc.setTime(getNtpTime());    
+      Wait_win("正在同步时间...");
       getNtpTime();
-      if(timeClient.isTimeSet()) 
+      if (timeClient.isTimeSet())
         Serial.println(rtc.getTime("%A, %B %d %Y %H:%M:%S")); // (String) returns time with specified format
-      loadNum += 19;    
+      loadNum += 19;
     }
     if (loadNum >= 170)
     {
       Serial.println("获取NTP时间失败，手动设置一个时间：2023-6-18-1-1-1"); // 如果同步失败，手动设置一个系统时间。
-      rtc.setTime(01, 01, 01, 18, 6, 2023);   // 17th Jan 2021 15:24:30       
-      loadNum = 194;                       
+      rtc.setTime(01, 01, 01, 18, 6, 2023);                                 // 17th Jan 2021 15:24:30
+      loadNum = 194;
       break;
     }
   }
- 
+
   while (loadNum < 170) // 让动画走完
   {
     Wait_win("时间同步成功...");
-    loadNum += 39; 
+    loadNum += 39;
   }
   loadNum = 194;
 
   // 每 60 * 60 秒同步时间一次
   setSyncProvider(getNtpTime);
-  setSyncInterval(60 * 60); // 每60分钟同步一次时间  
+  setSyncInterval(60 * 60); // 每60分钟同步一次时间
 
   Wait_win("正在城市信息..."); // 显示连接成功后界面
   // 获取城市代码
@@ -513,7 +554,7 @@ void setup()
   if (CityCODE >= 101000000 && CityCODE <= 102000000)
     cityCode = CityCODE;
   else
-    getCityCode(); // 获取城市代码
+    getCityCode();                    // 获取城市代码
   Wait_win("正在获取农历信息......"); // 显示连接成功后界面
   getNongli();                        // 农历信息
   Wait_win("正在获取天气情况......"); // 显示连接成功后界面
@@ -522,7 +563,7 @@ void setup()
   // 使用城市ID取当前预警
   weatherWarn.config(HeUserKey, cityCode); // 配置请求信息  101230201厦门 101230201 厦门  101281006 湛江 101281009 霞山
   getWarning();                            // 取当前预警
-  Wait_win("等待启动WEB服务...");       // 显示连接成功后界面
+  Wait_win("等待启动WEB服务...");          // 显示连接成功后界面
 
 #if WebSever_EN
   // 开启web服务器初始化
@@ -532,59 +573,59 @@ void setup()
 #endif
 
 #if DHT_EN
-  if (DHT_img_flag != 0){
-    getDHT11();  
-    IndoorTem();    
+  if (DHT_img_flag != 0)
+  {
+    getDHT11();
+    IndoorTem();
   }
-#endif  
+#endif
+  drawTemIcons();
 
-  // 任务A用来采集DHT11的温度湿度 tskNO_AFFINITY 表示不指定核心
-   shared_var_mutex_a = xSemaphoreCreateMutex(); // Create the mutex
-   shared_var_mutex_b = xSemaphoreCreateMutex(); // Create the mutex
+  // 任务A          任务B          tskNO_AFFINITY 表示不指定核心
+  xTaskCreatePinnedToCore(taskA, "Task A", 1024 * 8, NULL, 1, (TaskHandle_t *)&TaskA_Handle, 0);
+  xTaskCreatePinnedToCore(taskB, "Task B", 1024 * 5, NULL, 3, (TaskHandle_t *)&TaskB_Handle, 1); // configMAX_PRIORITIES - 1
+  xTaskCreatePinnedToCore(taskC, "Task C", 1024 * 4, NULL, 2, (TaskHandle_t *)&TaskC_Handle, 1);
+  xTaskCreatePinnedToCore(taskD, "Task D", 1024 * 3, NULL, 4, (TaskHandle_t *)&TaskD_Handle, 1);
 
-  xTaskCreatePinnedToCore(taskA, "Task A", 1024 * 2, NULL, 3, NULL, 1);
-  xTaskCreatePinnedToCore(taskB, "Task B", 1024 * 3, NULL, 2, NULL, 1);  //configMAX_PRIORITIES - 1
   tft.fillScreen(TFT_BLACK); // 清屏
+  weaterTime = millis();
 }
 
 void loop()
 {
-  LCD_reflash(UpdateScreen);
-#if WebSever_EN
-  Web_Sever();
-#endif
-  Serial_set();
-  DispWarn(isNewWarn);
+  vTaskDelete(NULL);
 }
-  // Serial.println("check 1:");
-  // Serial.println(ESP.getFreeHeap());
+// Serial.println("check 1:");
+// Serial.printf("FreeHeap:%d\r\n", ESP.getFreeHeap());
 
 /* ***************************************************************************
  *  以下各类函数
  *
  * **************************************************************************/
-// 任务A用来采集DHT11的温度湿度
+// 任务A webserver
 void taskA(void *ptParam)
 {
-  TickType_t xLastWakeTime;
-  const TickType_t xDelayms = pdMS_TO_TICKS(3000); // 3秒钟采一次
-  xLastWakeTime = xTaskGetTickCount();
   while (1)
   {
-    vTaskDelayUntil(&xLastWakeTime, xDelayms);
-    #ifdef UseMutex
-    SmartLocker smartLocker(&shared_var_mutex_a, portMAX_DELAY);
-    if(smartLocker.IsLocked())
+#ifdef UseMutex
+    SmartLocker smartLocker(&shared_var_mutex_loop, portMAX_DELAY);
+    if (smartLocker.IsLocked())
     {
-    #endif
-    getDHT11();                           //采集DHT11温湿度传感器
-    sleepTimeLoop(LCD_BL_PWM, MINLIGHT); // 定时开关显示屏背光 参数是打开后最大亮度
-    //printf("TaskA剩余栈%d\r\n", uxTaskGetStackHighWaterMark(NULL)); // uxTaskGetStackHighWaterMark以word为单位
-    // Serial.print("taskA: priority = ");
-    // Serial.println(uxTaskPriorityGet(NULL));
-    #ifdef UseMutex
+#endif
+      if (!isNewWarn)
+      {
+#if WebSever_EN
+        Web_Sever();
+#endif
+        Serial_set();
+        LCD_reflash(UpdateScreen);
+      }
+      // printf("TaskA剩余栈%d\r\n", uxTaskGetStackHighWaterMark(NULL)); // uxTaskGetStackHighWaterMark以word为单位
+      //     Serial.print("taskA: priority = ");
+      //     Serial.println(uxTaskPriorityGet(NULL));
+#ifdef UseMutex
     }
-    #endif
+#endif
   }
 }
 
@@ -592,36 +633,138 @@ void taskA(void *ptParam)
 void taskB(void *ptParam)
 {
   TickType_t xLastWakeTime;
-  const TickType_t xDelayms = pdMS_TO_TICKS(100); // 1000ms
+  const TickType_t xDelayms = pdMS_TO_TICKS(150); // 1000ms
   xLastWakeTime = xTaskGetTickCount();
   while (1)
   {
     vTaskDelayUntil(&xLastWakeTime, xDelayms);
     // 绘制时分秒
-    #ifdef UseMutex
-    SmartLocker smartLocker(&shared_var_mutex_b, portMAX_DELAY);
-    if(smartLocker.IsLocked())
+    if ((!isNewWarn) && (isNewWeather == 0) && (UpdateWeater_en == 0) && (UpdateNL_en == 0))
     {
-    #endif
-    if((! isNewWarn) && (isNewWeather == 0) && (UpdateWeater_en == 0)){
-       digitalClockDisplay(UpdateScreen);
-       imgAnim();      
+
+
+      if (UpdateScreen == 1)
+      {
+        digitalClockDisplay(1);
+        UpdateScreen = 0;
+      }
+      else
+      {
+        digitalClockDisplay(0);
+      }
+
+      imgAnim();
+
+      // 绘制室内温度
+#if DHT_EN
+      if (DHT_img_flag != 0)
+        IndoorTem();
+#endif
     }
 
-    #ifdef UseMutex
-    }
-    #endif    
+    sleepTimeLoop(LCD_BL_PWM, MINLIGHT); // 定时开关显示屏背光 参数是打开后最大亮度
     //printf("TaskB剩余栈%d\r\n", uxTaskGetStackHighWaterMark(NULL)); // uxTaskGetStackHighWaterMark以word为单位
-    // printf("xPortGetFreeHeapSize = %d\r\n", xPortGetFreeHeapSize());
-    // printf("xPortGetMinimumEverFreeHeapSize = %d\r\n", xPortGetMinimumEverFreeHeapSize());
-    // Serial.print("taskB: priority = ");
-    // Serial.println(uxTaskPriorityGet(NULL));
+    //     printf("xPortGetFreeHeapSize = %d\r\n", xPortGetFreeHeapSize());
+    //     printf("xPortGetMinimumEverFreeHeapSize = %d\r\n", xPortGetMinimumEverFreeHeapSize());
+    //     Serial.print("taskB: priority = ");
+    //     Serial.println(uxTaskPriorityGet(NULL));
+  }
+}
+
+// 任务C用来*********
+void taskC(void *ptParam)
+{
+  TickType_t xLastWakeTime;
+  const TickType_t xDelayms = pdMS_TO_TICKS(100); // 1000ms
+  xLastWakeTime = xTaskGetTickCount();
+  while (1)
+  {
+    vTaskDelayUntil(&xLastWakeTime, xDelayms);
+
+#ifdef UseMutex
+    SmartLocker smartLocker(&shared_var_mutex_loop, portMAX_DELAY);
+    if (smartLocker.IsLocked())
+    {
+#endif
+      if (isNewWarn)
+      {
+        vTaskSuspend(TaskB_Handle);
+        DispWarn();
+        isNewWarn = false;
+
+        imgAnim();        
+        digitalClockDisplay(1);      
+        drawTemIcons();
+        wrat.printfweather(160, 15, Iconsname);
+        weaterData();
+
+        vTaskResume(TaskB_Handle);
+      }
+
+      if (isNewWeather == 1 && isNewWarn == 0 && UpdateNL_en == 0 && UpdateScreen == 0)
+      {
+        drawTemIcons();
+        // 天气图标  170,15
+        wrat.printfweather(160, 15, Iconsname);
+        weaterData();
+        isNewWeather = 0;
+      }
+
+      if (!isNewWarn && UpdateScreen == 0)
+      {
+        // 显示上下两个滚动字幕
+        dispScrolls();
+      }
+
+      if (TaskD_Handle != NULL && updateDHT == 1)
+      {
+        updateDHT = 0;
+        vTaskResume(TaskD_Handle); // 恢复DHT11任务
+      }
+
+#ifdef UseMutex
+    }
+#endif
+    //printf("TaskC剩余栈%d\r\n", uxTaskGetStackHighWaterMark(NULL)); // uxTaskGetStackHighWaterMark以word为单位
+    //    printf("xPortGetFreeHeapSize = %d\r\n", xPortGetFreeHeapSize());
+    //    printf("xPortGetMinimumEverFreeHeapSize = %d\r\n", xPortGetMinimumEverFreeHeapSize());
+    //    Serial.print("taskB: priority = ");
+    //    Serial.println(uxTaskPriorityGet(NULL));
+  }
+}
+
+// 任务D用来*********
+void taskD(void *ptParam)
+{
+
+  while (1)
+  {
+    if (!isNewWarn)
+    {
+
+      if (DHT_img_flag != 0)
+      {
+        getDHT11(); // 采集DHT11温湿度传感器
+      }
+    }
+    vTaskSuspend(NULL); // 这里是把自己挂起，挂起后该任务被暂停，不恢复是不运行的
+
+    // printf("TaskD剩余栈%d\r\n", uxTaskGetStackHighWaterMark(NULL)); // uxTaskGetStackHighWaterMark以word为单位
+    //    printf("xPortGetFreeHeapSize = %d\r\n", xPortGetFreeHeapSize());
+    //    printf("xPortGetMinimumEverFreeHeapSize = %d\r\n", xPortGetMinimumEverFreeHeapSize());
+    //    Serial.print("taskB: priority = ");
+    //    Serial.println(uxTaskPriorityGet(NULL));
   }
 }
 
 void IRAM_ATTR onTimer()
 {               // 定时器中断函数
-  updateTime++; // 加1秒
+  updateTime++; // 加0.1秒
+}
+
+void IRAM_ATTR onTimer_dht()
+{                // 定时器中断函数
+  updateDHT = 1; //
 }
 
 /* *****************************************************************
@@ -662,17 +805,195 @@ void readwificonfig()
   {
     *(p + i) = EEPROM.read(i + wifi_addr);
   }
-  Serial.printf("Read WiFi Config.....\r\n");
-  Serial.printf("SSID:%s\r\n", wificonf.stassid);
-  Serial.print("************");
-  Serial.printf("Connecting.....\r\n");
+  for (int i = 0; i < 32; i++)
+  {
+    if (wificonf.stassid[i] == '\0')
+      break;
+    if (!isPrintable(wificonf.stassid[1]))
+    {
+      deletewificonfig();
+      esp_restart(); // 重启
+      break;
+    }
+  }
+  for (int i = 0; i < 64; i++)
+  {
+    if (wificonf.stapsw[i] == '\0')
+      break;
+    if (!isPrintable(wificonf.stapsw[i]))
+    {
+      deletewificonfig();
+      esp_restart(); // 重启
+      break;
+    }
+  }
+
 }
-// TFT屏幕输出函数
+
+// portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+//  TFT屏幕输出函数
 bool tft_output(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap)
 {
+  // if (y + h >= tft.height() || x + w >= tft.width())
+  //   return 0;
+
+  clkJpeg.setColorDepth(8);
+  clkJpeg.createSprite(w, h);
+  clkJpeg.fillSprite(TFT_BLACK);
+
+  SmartLocker smartLocker(&shared_var_mutex_pushImage, portMAX_DELAY);
+  if (smartLocker.IsLocked())
+  {
+    clkJpeg.pushImage(0, 0, w, h, bitmap);
+  }
+
+  SmartLocker smartLocker2(&shared_var_mutex_pushSprite, portMAX_DELAY);
+  if (smartLocker2.IsLocked())
+  {
+    clkJpeg.pushSprite(x, y);
+  }
+  clkJpeg.deleteSprite();
+  // Return 1 to decode next block
+  return 1;
+}
+// TFT屏幕输出函数_太空人动画专用
+bool tft_output_Anim(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap)
+{
+  uint16_t iColor;
+
+  // if (y >= tft.height())
+  //   return 0;
+
+  clkJpeg.setColorDepth(8);
+  clkJpeg.createSprite(w, h);
+  clkJpeg.fillSprite(TFT_BLACK);
+
+  SmartLocker smartLocker(&shared_var_mutex_pushImage, portMAX_DELAY);
+  if (smartLocker.IsLocked())
+  {
+    clkJpeg.pushImage(0, 0, w, h, bitmap);
+  }
+
+  for (int32_t i = 0; i < w; i++)
+  {
+    for (int32_t j = 0; j < h; j++)
+    {
+      iColor = clkJpeg.readPixel(i, j);
+      if (iColor != 0x0000)
+      {
+        clkJpeg.drawPixel(i, j, TFT_RED);
+      }
+      else
+      {
+        clkJpeg.drawPixel(i, j, TFT_BLACK);
+      }
+    }
+  }
+
+  SmartLocker smartLocker2(&shared_var_mutex_pushSprite, portMAX_DELAY);
+  if (smartLocker2.IsLocked())
+  {
+    clkJpeg.pushSprite(x, y);
+  }
+
+  clkJpeg.deleteSprite();
+
+  // Return 1 to decode next block
+  return 1;
+}
+// TFT屏幕输出函数_太空人动画专用
+bool tft_output_Anim2(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap)
+{
+  uint16_t iColor;
+
+  // if (y >= tft.height())
+  //   return 0;
+
+  clkJpeg.setColorDepth(8);
+  clkJpeg.createSprite(w, h);
+  clkJpeg.fillSprite(TFT_BLACK);
+
+  SmartLocker smartLocker(&shared_var_mutex_pushImage, portMAX_DELAY);
+  if (smartLocker.IsLocked())
+  {
+    clkJpeg.pushImage(0, 0, w, h, bitmap);
+  }
+
+  for (int32_t i = 0; i < w; i++)
+  {
+    for (int32_t j = 0; j < h; j++)
+    {
+      iColor = clkJpeg.readPixel(i, j);
+      if (iColor != 0x0000)
+      {
+        clkJpeg.drawPixel(i, j, TFT_YELLOW);
+      }
+      else
+      {
+        clkJpeg.drawPixel(i, j, TFT_BLACK);
+      }
+    }
+  }
+
+  SmartLocker smartLocker2(&shared_var_mutex_pushSprite, portMAX_DELAY);
+  if (smartLocker2.IsLocked())
+  {
+    clkJpeg.pushSprite(x, y);
+  }
+
+  clkJpeg.deleteSprite();
+
+  // Return 1 to decode next block
+  return 1;
+}
+// TFT屏幕输出函数_天气告警专用
+bool tft_output_Warn(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t *bitmap)
+{
+  uint16_t iColor;
+  String sColor = weatherWarn.getColor();
+
   if (y >= tft.height())
     return 0;
-  tft.pushImage(x, y, w, h, bitmap);
+
+  clk.setColorDepth(8);
+  clk.createSprite(w, h);
+  clk.fillSprite(TFT_BLACK);
+  clk.pushImage(0, 0, w, h, bitmap);
+
+  for (int32_t i = 0; i < w; i++)
+  {
+    for (int32_t j = 0; j < h; j++)
+    {
+      iColor = clk.readPixel(i, j);
+      if (iColor != 0xffff)
+      {
+        if (sColor.equals("White"))
+          clk.drawPixel(i, j, brightness(TFT_LIGHTGREY, 60));
+        else if (sColor.equals("Blue"))
+          clk.drawPixel(i, j, brightness(TFT_BLUE, 60));
+        else if (sColor.equals("Green"))
+          clk.drawPixel(i, j, brightness(TFT_GREEN, 60));
+        else if (sColor.equals("Yellow"))
+          clk.drawPixel(i, j, brightness(TFT_YELLOW, 60));
+        else if (sColor.equals("Orange"))
+          clk.drawPixel(i, j, brightness(TFT_ORANGE, 60));
+        else if (sColor.equals("Red"))
+          clk.drawPixel(i, j, brightness(TFT_RED, 60));
+        else if (sColor.equals("Black"))
+          clk.drawPixel(i, j, brightness(TFT_BLACK, 60));
+        else
+          clk.drawPixel(i, j, brightness(TFT_GREENYELLOW, 60)); // unsigned int brightness(unsigned int colour, int brightness)
+      }
+      else
+      {
+        clk.drawPixel(i, j, TFT_WHITE);
+      }
+    }
+  }
+
+  clk.pushSprite(x, y);
+  clk.deleteSprite();
+
   // Return 1 to decode next block
   return 1;
 }
@@ -684,9 +1005,9 @@ void loading(byte delayTime) // 绘制进度条
   clk.createSprite(200, 100); // 创建窗口
   clk.fillSprite(0x0000);     // 填充率
 
-  clk.drawRoundRect(0, 0, 200, 16, 8, 0xFFFF);     // 空心圆角矩形
+  clk.drawRoundRect(0, 0, 200, 16, 8, 0xFFFF);        // 空心圆角矩形
   clk.fillRoundRect(3, 3, loadNum, 10, 5, TFT_GREEN); // 实心圆角矩形
-  clk.setTextDatum(CC_DATUM);                      // 设置文本数据
+  clk.setTextDatum(CC_DATUM);                         // 设置文本数据
   clk.setTextColor(TFT_GREEN, 0x0000);
   clk.drawString("Connecting to WiFi......", 100, 40, 2);
   clk.setTextColor(TFT_WHITE, 0x0000);
@@ -849,7 +1170,7 @@ void Serial_set()
         LCD_BL_PWM = EEPROM.read(BL_addr);
         delay(5);
         SMOD = "";
-        Serial.printf("亮度调整为：");
+        Serial.print("亮度调整为：");
         // analogWrite(LCD_BL_PIN, 1023 - (LCD_BL_PWM*10));
         ledcAnalogWrite(pwm_channel0, LCD_BL_PWM);
         Serial.println(LCD_BL_PWM);
@@ -888,7 +1209,7 @@ void Serial_set()
         }
         else
         {
-          Serial.printf("城市代码调整为：");
+          Serial.print("城市代码调整为：");
           Serial.println(cityCode);
         }
         UpdateWeater_en = 1;
@@ -911,11 +1232,9 @@ void Serial_set()
         // 设置屏幕方向后重新刷屏并显示
         tft.setRotation(RoSet);
         tft.fillScreen(0x0000);
-        UpdateWeater_en = 1;
+        isNewWeather = 1;
         UpdateScreen = 1;
-        // LCD_reflash(1); // 屏幕刷新程序
-        // TJpgDec.drawJpg(15, 183, temperature, sizeof(temperature)); // 温度图标
-        // TJpgDec.drawJpg(15, 213, humidity, sizeof(humidity));       // 湿度图标
+
         Serial.print("屏幕方向设置为：");
         Serial.println(RoSet);
       }
@@ -934,9 +1253,9 @@ void Serial_set()
         delay(5);
         updateweater_time = EEPROM.read(UpWeT_addr);
         delay(5);
-       // updateweater_time = wtup;
+        // updateweater_time = wtup;
         SMOD = "";
-        Serial.printf("天气更新时间更改为：");
+        Serial.print("天气更新时间更改为：");
         Serial.print(updateweater_time);
         Serial.println("分钟");
       }
@@ -1018,7 +1337,7 @@ void Wait_win(String showStr)
   clk.deleteSprite();
   clk.unloadFont();
   loadNum += 1;
-  if(loadNum >=255)
+  if (loadNum >= 255)
     loadNum = 0;
 }
 
@@ -1110,7 +1429,7 @@ void Webconfig()
   //  wm.setShowStaticFields(true); // force show static ip fields
   //  wm.setShowDnsFields(true);    // force show dns field always
 
-  wm.setConnectTimeout(60); // how long to try to connect for before continuing
+  wm.setConnectTimeout(60);       // how long to try to connect for before continuing
   wm.setConfigPortalTimeout(120); // auto close configportal after n seconds
   // wm.setCaptivePortalEnable(false); // disable captive portal redirection
   // wm.setAPClientCheck(true); // avoid timeout if client connected to softap
@@ -1214,23 +1533,24 @@ void saveParamCallback()
     delay(5);
   }
   // 屏幕亮度
-  Serial.printf("亮度调整为：");
+  Serial.print("亮度调整为：");
   ledcAnalogWrite(pwm_channel0, LCD_BL_PWM);
   Serial.println(LCD_BL_PWM);
   // 天气更新时间
-  Serial.printf("天气更新时间调整为：");
+  Serial.print("天气更新时间调整为：");
   Serial.println(updateweater_time);
 
 #if DHT_EN
   // 是否使用DHT11传感器
-  Serial.printf("DHT11传感器：");
+  Serial.print("DHT11传感器：");
   EEPROM.write(DHT_addr, DHT_img_flag);
   EEPROM.commit(); // 保存更改的数据
   Serial.println((DHT_img_flag ? "已启用" : "未启用"));
 #endif
 }
-//web配网成功后保存回调函数
-void SaveConfigCallback(){
+// web配网成功后保存回调函数
+void SaveConfigCallback()
+{
   if (WiFi.status() == WL_CONNECTED)
   {
     Serial.print("SSID:");
@@ -1245,75 +1565,67 @@ void SaveConfigCallback(){
 }
 #endif
 
-bool haveNL = 0; // 每天凌晨更新农历
 void LCD_reflash(bool en)
 {
   // 更新天气情况和预警情况
   if (UpdateWeater_en == 1)
-  { 
+  {
     if (WiFi.status() == WL_CONNECTED)
     {
-      Serial.println("WIFI已连接");
+      Serial.println("开始更新天气...");
+
       getCityWeater();
       getWarning(); // 取当前预警
+
       if (UpdateWeater_en == 1)
         UpdateWeater_en = 0;
     }
   }
-  if (isNewWeather)
+
+  // 更新农历情况
+  if (UpdateNL_en == 1)
   {
-    TJpgDec.drawJpg(31, 183, temperature, sizeof(temperature)); // 温度图标
-    TJpgDec.drawJpg(50, 200, humidity, sizeof(humidity));       // 湿度图标
-    weaterData();
-    isNewWeather = false;
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      Serial.println("开始更新万年历...");
+      getNongli();
+      if (UpdateNL_en == 1)
+        UpdateNL_en = 0;
+    }
   }
 
-  // 绘制时分秒
-  // if (rtc.getSecond() != prevDisplay || en == 1)
-  // {
-  //   prevDisplay = rtc.getSecond();
-  //   digitalClockDisplay(en);
-  // }
-
-  // 绘制室内温度
-#if DHT_EN
-  if (DHT_img_flag != 0)
-    IndoorTem();
-#endif
-
-  // 绘制太空人
-  //imgAnim();
-  //显示上下两个滚动字幕
-  dispScrolls();
-
   // 20分钟更新一次天气
-  if(millis() - weaterTime > (60000 * updateweater_time)){
+  if (millis() - weaterTime > (60000 * updateweater_time))
+  {
     UpdateWeater_en = 1;
     weaterTime = millis();
   }
 
-  // 每天凌晨8分更新一下农历信息
-  if ((rtc.getHour(true) == 0 && rtc.getMinute() == 8))
+  // 每3小时更新一下农历信息
+  if (rtc.getHour(true) % 3 == 0)
   {
-    if (en == 1)
+    if (!finishNL)
     {
-      getNongli();
-      haveNL = 1;
-      return;
+      UpdateNL_en = 1;
     }
-    if (haveNL == 0)
+    else
     {
-      getNongli();
-      haveNL = 1;
+      UpdateNL_en = 0;
     }
   }
   else
   {
-    haveNL = 0;
+    UpdateNL_en = 0;
   }
-  UpdateScreen = 0;
+  // UpdateScreen = 2;
 }
-//滚动显示两个字幕
+
+void drawTemIcons()
+{
+  TJpgDec.drawJpg(31, 183, temperature, sizeof(temperature)); // 温度图标
+  TJpgDec.drawJpg(50, 200, humidity, sizeof(humidity));       // 湿度图标
+}
+// 滚动显示两个字幕
 void dispScrolls()
 {
   /***********************************************************************************************************
@@ -1356,18 +1668,23 @@ void dispScrolls()
       break;
     }
   }
-
 }
 
 // 取得和风天气的预警信息
 void getWarning()
 {
-  if (WiFi.status() != WL_CONNECTED){
+  if (WiFi.status() != WL_CONNECTED)
+  {
     Serial.println("getWarning Error:WiFi is not Connected.");
-    WiFi.reconnect();
-    return;    
+    LostWiFi = true;
+    // WiFi.reconnect();
+    return;
   }
-  isNewWarn = false;    
+  else
+  {
+    LostWiFi = false;
+  }
+  isNewWarn = false;
   scrollText[6] = "";
 
   if (weatherWarn.get())
@@ -1397,112 +1714,124 @@ void getWarning()
 }
 
 // 显示天气预警界面
-void DispWarn(int en)
+void DispWarn()
 {
-  if (en)
+  String T = weatherWarn.getTitle();
+  String X = weatherWarn.getWeatherText();
+
+  if (T.isEmpty() || X.isEmpty())
   {
-    String T = weatherWarn.getTitle();
-    String X = weatherWarn.getWeatherText();
-
-    if(T.isEmpty() || X.isEmpty()){
-      Serial.println("warning is Empty!");
-      return;      
-    }
-
-    int StrIndex = T.indexOf("布");
-    String temp1 = T.substring(0, StrIndex - 3);
-    String temp2 = T.substring(StrIndex + 3);
-    String sColor = weatherWarn.getColor();
-
-    if (sColor.equals("White"))
-      tft.fillScreen(TFT_LIGHTGREY);
-    else if (sColor.equals("Blue"))
-      tft.fillScreen(TFT_BLUE);
-    else if (sColor.equals("Green"))
-      tft.fillScreen(TFT_GREEN);
-    else if (sColor.equals("Yellow"))
-      tft.fillScreen(TFT_YELLOW);
-    else if (sColor.equals("Orange"))
-      tft.fillScreen(TFT_ORANGE);
-    else if (sColor.equals("Red"))
-      tft.fillScreen(TFT_RED);
-    else if (sColor.equals("Black"))
-      tft.fillScreen(TFT_BLACK);
-    else
-      tft.fillScreen(TFT_SILVER);
-
-    String typeFile = "/png/" + String(weatherWarn.getType(), DEC) + ".svg.jpg";
-    TJpgDec.drawFsJpg(80, 10, typeFile, FlashFS);
-
-    clk.setColorDepth(8);
-    clk.loadFont("msyhbd20", FlashFS);
-    clk.createSprite(220, 26 * 2);
-    clk.fillSprite(TFT_PINK);
-    clk.setTextWrap(false);
-    clk.setTextDatum(TL_DATUM);
-    clk.setTextColor(TFT_NAVY, TFT_PINK);
-
-    clk.drawCentreString(temp2, 110, 3, 2);
-    clk.drawCentreString(temp1, 110, 30, 2);
-
-    clk.pushSprite(10, 162);
-    clk.deleteSprite();
-
-    clk.createSprite(230, 22 * 3);
-    clk.fillSprite(TFT_WHITE);
-    clk.setTextWrap(true);
-    clk.setTextDatum(BL_DATUM);
-    clk.setTextColor(TFT_BLACK, TFT_WHITE);
-
-    int iCounter = 10 * X.length() / (12 * 2) - 30;
-
-    for (int i = 0; i < iCounter; i++)
-    {
-      clk.fillSprite(TFT_WHITE);
-      clk.drawString(X, 2, 60 - i * 2);
-      clk.pushSprite(5, 90);
-
-      // Continuous elliptical arc drawing
-      fillArc(120, 120, inc * 6, 1, 120, 120, 5, rainbow(col));
-      inc++;
-      col += 1;
-      if (col > 191)
-        col = 0;
-      if (inc > 59)
-        inc = 0;
-
-      delay(LOOP_DELAY);
-    }
-
-    // clk.pushSprite(10, 140);
-    clk.deleteSprite();
-    clk.unloadFont();
-
-    matrix_effect.setTextAnimMode(AnimMode::SHOWCASE, "\n\r Weather Warning!!!       \n\r...气象警告!!!注意安全...        \n\r", 15, 120, 280);
-    const long period = 22000;              // period at which to blink in ms
-    unsigned long currentMillis = millis(); // store the current time
-    tft.loadFont(ztqFont_20);
-    do
-    {
-      matrix_effect.loop();
-    } while (millis() - currentMillis <= period); // check if 1000ms passed
-    tft.unloadFont();
-    delay(10);
-    isNewWeather = true;
-    UpdateScreen = 1;
-
-    tft.fillScreen(TFT_BLACK);
+    Serial.println("warning is Empty!");
+    return;
   }
-  isNewWarn = false;
+
+  int StrIndex = T.indexOf("布");
+  String temp1 = T.substring(0, StrIndex - 3);
+  String temp2 = T.substring(StrIndex + 3);
+  String sColor = weatherWarn.getColor();
+
+  if (sColor.equals("White"))
+    tft.fillScreen(TFT_LIGHTGREY);
+  else if (sColor.equals("Blue"))
+    tft.fillScreen(TFT_BLUE);
+  else if (sColor.equals("Green"))
+    tft.fillScreen(TFT_GREEN);
+  else if (sColor.equals("Yellow"))
+    tft.fillScreen(TFT_YELLOW);
+  else if (sColor.equals("Orange"))
+    tft.fillScreen(TFT_ORANGE);
+  else if (sColor.equals("Red"))
+    tft.fillScreen(TFT_RED);
+  else if (sColor.equals("Black"))
+    tft.fillScreen(TFT_BLACK);
+  else
+    tft.fillScreen(TFT_SILVER);
+
+  String typeFile = "/png/" + String(weatherWarn.getType(), DEC) + ".jpg";
+
+  // 防止出现不明的警号代码
+  if (!FlashFS.exists(typeFile))
+  {
+    typeFile = "/png/9999.jpg";
+  }
+
+  TJpgDec.setCallback(tft_output_Warn);
+  TJpgDec.drawFsJpg(80, 10, typeFile, FlashFS);
+  TJpgDec.setCallback(tft_output);
+  tft.drawRoundRect(80, 10, 80, 80, 5, TFT_BLACK);
+  tft.drawRoundRect(80 + 1, 10 + 1, 80 - 2, 80 - 2, 5, TFT_BLACK);
+  tft.drawRoundRect(80 + 2, 10 + 2, 80 - 4, 80 - 4, 5, TFT_BLACK);
+
+  clk.setColorDepth(8);
+  clk.loadFont("msyhbd20", FlashFS);
+  clk.createSprite(220, 26 * 2);
+  clk.fillSprite(TFT_PINK);
+  clk.setTextWrap(false);
+  clk.setTextDatum(TL_DATUM);
+  clk.setTextColor(TFT_NAVY, TFT_PINK);
+
+  clk.drawCentreString(temp2, 110, 3, 2);
+  clk.drawCentreString(temp1, 110, 30, 2);
+
+  clk.pushSprite(10, 162);
+  clk.deleteSprite();
+
+  clk.createSprite(230, 22 * 3);
+  clk.fillSprite(TFT_WHITE);
+  clk.setTextWrap(true);
+  clk.setTextDatum(BL_DATUM);
+  clk.setTextColor(TFT_BLACK, TFT_WHITE);
+
+  int iCounter = 10 * X.length() / (12 * 2) - 30;
+
+  for (int i = 0; i < iCounter; i++)
+  {
+    clk.fillSprite(TFT_WHITE);
+    clk.drawString(X, 2, 60 - i * 2);
+    clk.pushSprite(5, 90);
+
+    // Continuous elliptical arc drawing
+    fillArc(120, 120, inc * 6, 1, 120, 120, 5, rainbow(col));
+    inc++;
+    col += 1;
+    if (col > 191)
+      col = 0;
+    if (inc > 59)
+      inc = 0;
+
+    delay(LOOP_DELAY);
+  }
+
+  // clk.pushSprite(10, 140);
+  clk.deleteSprite();
+  clk.unloadFont();
+
+  matrix_effect.setTextAnimMode(AnimMode::SHOWCASE, "\n\r Weather Warning!!!       \n\r...气象警告!!!注意安全...        \n\r", 15, 120, 280);
+  const long period = 22000;              // period at which to blink in ms
+  unsigned long currentMillis = millis(); // store the current time
+  tft.loadFont(ztqFont_20);
+  do
+  {
+    matrix_effect.loop();
+  } while (millis() - currentMillis <= period); // check if 1000ms passed
+  tft.unloadFont();
+  delay(10);
+  tft.fillScreen(TFT_BLACK);
 }
 
 // 发送HTTP请求并且将服务器响应通过串口输出
 void getCityCode()
 {
-  if (WiFi.status() != WL_CONNECTED){
+  if (WiFi.status() != WL_CONNECTED)
+  {
     Serial.println("getCitycode Error:WiFi is not Connected.");
-    WiFi.reconnect();
-    return;    
+    LostWiFi = true;
+    // WiFi.reconnect();
+    return;
+  }
+  else
+  {
+    LostWiFi = false;
   }
 
   String URL = "http://wgeo.weather.com.cn/ip/?_=" + String(rtc.getEpoch());
@@ -1579,10 +1908,16 @@ void getCityCode()
 // 获取城市天气
 void getCityWeater()
 {
-  if (WiFi.status() != WL_CONNECTED){
-    Serial.println("getCityweather Error:WiFi is not Connected.");
-    WiFi.reconnect();
-    return;    
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("getCitycode Error:WiFi is not Connected.");
+    LostWiFi = true;
+    // WiFi.reconnect();
+    return;
+  }
+  else
+  {
+    LostWiFi = false;
   }
 
   String jsonCityDZ = "";
@@ -1629,7 +1964,7 @@ void getCityWeater()
     indexEnd = str.indexOf(",{\"fa");
     jsonFC = str.substring(indexStart + 5, indexEnd);
 
-    isNewWeather = true;
+    isNewWeather = 1;
     Serial.println("获取成功");
 
     // 解析第一段JSON
@@ -1666,7 +2001,7 @@ void getCityWeater()
   else
   {
     Serial.print("请求城市天气错误：");
-    isNewWeather = true;
+    isNewWeather = 1;
     jsonCityDZ = "{\"city\":\"湛江\",\"cityname\":\"zhanjiang\",\"temp\":\"999\",\"tempn\":\"29\",\"weather\":\"等待更新\",\"wd\":\"等待更新\",\"ws\":\"等待更新\",\"weathercode\":\"d1\",\"weathercoden\":\"n3\",\"fctime\":\"202306220800\"}";
     jsonDataSK = "{\"nameen\":\"zhanjiang\",\"cityname\":\"湛江\",\"city\":\"101281001\",\"temp\":\"00\",\"tempf\":\"00\",\"WD\":\"等待更新\",\"wde\":\"NW\",\"WS\":\"等待更新\",\"wse\":\"4km/h\",\"SD\":\"00%\",\"sd\":\"00%\",\"qy\":\"997\",\"njd\":\"13km\",\"time\":\"18:55\",\"rain\":\"0\",\"rain24h\":\"0\",\"aqi\":\"38\",\"aqi_pm25\":\"38\",\"weather\":\"等待更新\",\"weathere\":\"Cloudy\",\"weathercode\":\"d01\",\"limitnumber\":\"\",\"date\":\"等待更新\"}";
     jsonFC = "{\"fa\":\"01\",\"fb\":\"03\",\"fc\":\"34\",\"fd\":\"27\",\"fe\":\"等待更新\",\"ff\":\"等待更新\",\"fg\":\"等待更新\",\"fh\":\"等待更新\",\"fk\":\"5\",\"fl\":\"0\",\"fm\":\"999.9\",\"fn\":\"88.9\",\"fi\":\"6/22\",\"fj\":\"今天\"}";
@@ -1678,10 +2013,16 @@ void getCityWeater()
 //  获取农历信息
 void getNongli()
 {
-  if (WiFi.status() != WL_CONNECTED){
-    Serial.println("get NongLi Error:WiFi is not Connected.");
-    WiFi.reconnect();
-    return;    
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("getCitycode Error:WiFi is not Connected.");
+    LostWiFi = true;
+    // WiFi.reconnect();
+    return;
+  }
+  else
+  {
+    LostWiFi = false;
   }
 
   Serial.println("获取农历信息．．．");
@@ -1698,13 +2039,13 @@ void getNongli()
 
   if (scrollNongLi != NULL)
     delete[] scrollNongLi;
-  scrollNongLi = new Display[TotalHEAD];
+  scrollNongLi = new Display[1];
   if (scrollNongLi == NULL)
   {
     Serial.println("new scrollNongLi fail!!");
     return;
   }
-  memset(scrollNongLi, '\0', TotalDis);
+  memset(scrollNongLi, '\0', 1);
 
   String Y = String(rtc.getYear());
   String M = rtc.getMonth() + 1 < 10 ? "0" + String(rtc.getMonth() + 1) : String(rtc.getMonth() + 1);
@@ -1714,8 +2055,6 @@ void getNongli()
 
   scrollNongLi[0].title = scrolHEAD[0].title = monthDay() + " " + week();
   scrollNongLi[0].color = scrolHEAD[0].color = cWHITE;
-
-
 
   // https://www.mxnzp.com/api/holiday/single/20181121?ignoreHoliday=false&app_id=不再提供请自主申请&app_secret=不再提供请自主申请
   String URL = "https://www.mxnzp.com/api/holiday/single/" + Y + M + D + "?ignoreHoliday=false&app_id=" + mx_id + "&app_secret=" + mx_secret;
@@ -1728,6 +2067,10 @@ void getNongli()
   if (!client)
   {
     Serial.println("Unable to create client");
+    if (scrollNongLi != NULL)
+      delete[] scrollNongLi;
+    if (scrolHEAD != NULL)
+      delete[] scrolHEAD;
     return;
   }
 
@@ -1837,13 +2180,22 @@ void getNongli()
     {
       Serial.print(F("deserializeJson() failed: "));
       Serial.println(error.f_str());
+      if (scrollNongLi != NULL)
+        delete[] scrollNongLi;
+      if (scrolHEAD != NULL)
+        delete[] scrolHEAD;
       return;
     }
     JsonObject root = doc.as<JsonObject>();
- 
-    if(doc["code"].as<int>() != 1){
+
+    if (doc["code"].as<int>() != 1)
+    {
       Serial.print(F("data is  wrong: "));
-      Serial.println(doc["code"].as<int>());   
+      Serial.println(doc["code"].as<int>());
+      if (scrollNongLi != NULL)
+        delete[] scrollNongLi;
+      if (scrolHEAD != NULL)
+        delete[] scrolHEAD;
       return;
     }
 
@@ -1856,7 +2208,7 @@ void getNongli()
     scrolHEAD[1].color = cWHITE;
     scrolHEAD[2].title = data["chineseZodiac"].as<String>() + "年" + data["weekOfYear"].as<String>() + "周" + " " + data["typeDes"].as<String>();
     scrolHEAD[2].color = cWHITE;
-    scrolHEAD[3].title = "今日" + data["solarTerms"].as<String>(); 
+    scrolHEAD[3].title = "今日" + data["solarTerms"].as<String>();
     scrolHEAD[3].color = cWHITE;
 
     // 宜忌有时描述太长，分行显示
@@ -1975,6 +2327,8 @@ void getNongli()
       delete[] scrollJI;
     if (scrollYI != NULL)
       delete[] scrollYI;
+
+    finishNL = true;
   }
   else
   {
@@ -1996,6 +2350,8 @@ void getNongli()
     }
 
     Serial.print("请求农历信息错误：");
+
+    finishNL = false;
   }
 
   if (scrolHEAD != NULL)
@@ -2199,12 +2555,10 @@ void weaterData()
   clk.fillSprite(bgColor);
   clk.setTextDatum(CC_DATUM);
   clk.setTextColor(TFT_WHITE, bgColor);
-  clk.drawString(String(huminum, DEC)+'%', 28, 13);
+  clk.drawString(String(huminum, DEC) + '%', 28, 13);
   // clk.drawString("100%",28,13);
   clk.pushSprite(110, 214);
   clk.deleteSprite();
-  // String A = sk["SD"].as<String>();
-  // huminum = atoi((sk["SD"].as<String>()).substring(0, 2).c_str());
 
   if (huminum > 90)
     humicol = 0x00FF;
@@ -2223,9 +2577,7 @@ void weaterData()
   clk.fillSprite(bgColor);
   clk.setTextDatum(CC_DATUM);
   clk.setTextColor(TFT_WHITE, bgColor);
-  // 霞山的霞字在字库里面没有，所以调整为湛江 ：）
-  // String cityname = sk["cityname"].as<String>();
-  // cityname = cityname.equals("霞山") ? "湛江" : cityname;
+
   clk.drawString(cityname, 44, 16);
   clk.pushSprite(26, 15); // 15,15
   clk.deleteSprite();
@@ -2263,12 +2615,7 @@ void weaterData()
   clk.pushSprite(104, 18);
   clk.deleteSprite();
 
-  // scrollText[0] = "实时天气 " + sk["weather"].as<String>();
   scrollText[1] = "空气质量 " + aqiTxt;
-  // scrollText[2] = "风向 " + sk["WD"].as<String>() + sk["WS"].as<String>();
-
-  // 天气图标  170,15
-  wrat.printfweather(160, 15, Iconsname);
 
   clk.unloadFont();
 }
@@ -2289,7 +2636,12 @@ void scrollBanner()
     scrollText[6].isEmpty() ? clk.setTextColor(TFT_WHITE, bgColor) : clk.setTextColor(TFT_MAGENTA, bgColor);
 
     clk.drawString(scrollText[currentIndex], 74, 16);
-    clk.pushSprite(10, 45);
+
+    SmartLocker smartLocker2(&shared_var_mutex_pushSprite, portMAX_DELAY);
+    if (smartLocker2.IsLocked())
+    {
+      clk.pushSprite(10, 45);
+    }
 
     clk.deleteSprite();
     clk.unloadFont();
@@ -2344,7 +2696,13 @@ void scrollDate()
         break;
       }
       clk.drawString(scrollNongLi[CurrentDisDate].title, 75, 16);
-      clk.pushSprite(10, 150);
+
+      SmartLocker smartLocker2(&shared_var_mutex_pushSprite, portMAX_DELAY);
+      if (smartLocker2.IsLocked())
+      {
+        clk.pushSprite(10, 150);
+      }
+
       clk.deleteSprite();
       clk.unloadFont();
     }
@@ -2376,14 +2734,14 @@ void scrollDate()
 void imgAnim()
 {
   int x = 160, y = 160;
-  if (millis() - AprevTime > 37) // x ms切换一次
-  {
-    Anim++;
-    AprevTime = millis();
-  }
-  //Anim++;
+
+  Anim++;
   if (Anim == 10)
     Anim = 0;
+  if (LostWiFi)
+    TJpgDec.setCallback(tft_output_Anim);
+  if (! scrollText[6].isEmpty())
+    TJpgDec.setCallback(tft_output_Anim2);
 
   switch (Anim)
   {
@@ -2421,42 +2779,47 @@ void imgAnim()
     Serial.println("显示Anim错误");
     break;
   }
+  if (LostWiFi || !scrollText[6].isEmpty())
+    TJpgDec.setCallback(tft_output);
 }
 #endif
 
 unsigned char Hour_sign = 60;
 unsigned char Minute_sign = 60;
 unsigned char Second_sign = 60;
-void digitalClockDisplay(int reflash_en)
+void digitalClockDisplay(int reflash_Clock)
 {
-    // The decoder must be given the exact name of the rendering function above
+  // The decoder must be given the exact name of the rendering function above
   int timey = 82;
-  if (rtc.getHour(true) != Hour_sign || reflash_en == 1) // 时钟刷新
+  if (rtc.getHour(true) != Hour_sign || reflash_Clock == 1) // 时钟刷新
   {
     dig.printfW3660(20 - 10, timey, rtc.getHour(true) / 10);
     dig.printfW3660(60 - 10, timey, rtc.getHour(true) % 10);
     Hour_sign = rtc.getHour(true);
   }
-  if (rtc.getMinute() != Minute_sign || reflash_en == 1) // 分钟刷新
+  if (rtc.getMinute() != Minute_sign || reflash_Clock == 1) // 分钟刷新
   {
     dig.printfO3660(101 - 10, timey, rtc.getMinute() / 10);
     dig.printfO3660(141 - 10, timey, rtc.getMinute() % 10);
     Minute_sign = rtc.getMinute();
   }
-  if (rtc.getSecond() != Second_sign || reflash_en == 1) // 秒钟刷新
+  if (rtc.getSecond() != Second_sign || reflash_Clock == 1) // 秒钟刷新
   {
-    if (DHT_img_flag == 1){
+    if (DHT_img_flag == 1)
+    {
       dig.printfW1830(182 - 10, timey, rtc.getSecond() / 10);
-      dig.printfW1830(202 - 10, timey, rtc.getSecond() % 10);      
-    }else{
+      dig.printfW1830(202 - 10, timey, rtc.getSecond() % 10);
+    }
+    else
+    {
       dig.printfW1830(182 - 10, timey + 30, rtc.getSecond() / 10);
-      dig.printfW1830(202 - 10, timey + 30, rtc.getSecond() % 10);         
+      dig.printfW1830(202 - 10, timey + 30, rtc.getSecond() % 10);
     }
 
     Second_sign = rtc.getSecond();
   }
-  if (reflash_en == 1)
-    reflash_en = 0;
+  // if (reflash_Clock == 1)
+  //   reflash_Clock = 0;
 }
 
 // 星期
@@ -2479,13 +2842,16 @@ String monthDay()
 
 time_t getNtpTime()
 {
+  unsigned long t;
   if (WiFi.status() == WL_CONNECTED)
   {
+    // timeClient.update();
+    t = timeClient.getEpochTime();
+    rtc.setTime(t);
     timeClient.update();
-    rtc.setTime(timeClient.getEpochTime());
-    return timeClient.getEpochTime();
+    return t;
   }
-  return 0;
+  return t;
 }
 
 /* **************************************************************************
@@ -2760,7 +3126,7 @@ void handleconfig()
       delay(5);
       LCD_BL_PWM = EEPROM.read(BL_addr);
       delay(5);
-      Serial.printf("亮度调整为：");
+      Serial.print("亮度调整为：");
       // analogWrite(LCD_BL_PIN, 1023 - (LCD_BL_PWM * 10));
       ledcAnalogWrite(pwm_channel0, LCD_BL_PWM);
       Serial.println(LCD_BL_PWM);
@@ -2769,12 +3135,12 @@ void handleconfig()
     }
     if (web_upt > 0 && web_upt <= 60)
     {
-      EEPROM.write(UpWeT_addr, web_upt); // 亮度地址写入亮度值
+      EEPROM.write(UpWeT_addr, web_upt); // 时间间隔写入亮度值
       EEPROM.commit();                   // 保存更改的数据
       delay(5);
       updateweater_time = EEPROM.read(UpWeT_addr);
       delay(5);
-      //updateweater_time = web_upt;
+      // updateweater_time = web_upt;
       Serial.print("天气更新时间（分钟）:");
       Serial.println(web_upt);
       msg = "Sent OK!!!";
@@ -2787,12 +3153,10 @@ void handleconfig()
     {
       DHT_img_flag = web_dhten;
       tft.fillScreen(0x0000);
-      // LCD_reflash(1); // 屏幕刷新程序
+
       UpdateScreen = 1;
-      UpdateWeater_en = 1;
+      isNewWeather = 1;
       msg = "Sent OK!!!";
-      // TJpgDec.drawJpg(15, 183, temperature, sizeof(temperature)); // 温度图标
-      // TJpgDec.drawJpg(15, 213, humidity, sizeof(humidity));       // 湿度图标
     }
     Serial.print("DHT Sensor Enable： ");
     Serial.println(DHT_img_flag);
@@ -2805,12 +3169,10 @@ void handleconfig()
       LCD_Rotation = web_setro;
       tft.setRotation(LCD_Rotation);
       tft.fillScreen(0x0000);
-      UpdateWeater_en = 1;
+      isNewWeather = 1;
       UpdateScreen = 1;
       msg = "Sent OK!!!";
-      //   // LCD_reflash(1); // 屏幕刷新程序
-      // LCD_reflash(1); // 屏幕刷新程序
-      // UpdateWeater_en = 1;
+ 
       TJpgDec.drawJpg(15, 183, temperature, sizeof(temperature)); // 温度图标
       TJpgDec.drawJpg(15, 213, humidity, sizeof(humidity));       // 湿度图标
     }
@@ -2863,7 +3225,7 @@ void handleconfig()
   content += "> USB Left<br>";
   content += "<br><div><input type='submit' name='Save' value='Save'></form></div>" + msg + "<br>";
   content += "By WCY<br>";
-  content += "<script> function clearinput(){document.getElementById('cityid').value='';}</script>"; 
+  content += "<script> function clearinput(){document.getElementById('cityid').value='';}</script>";
   content += "</body>";
   content += "</html>";
 
@@ -2906,9 +3268,6 @@ void Web_Sever_Init()
   }
 
   Serial.println("mDNS responder started");
-  // 输出连接wifi后的IP地址
-  //  Serial.print("本地IP： ");
-  //  Serial.println(WiFi.localIP());
 
   server.on("/", handleconfig);
   server.onNotFound(handleNotFound);
@@ -2926,10 +3285,15 @@ void Web_Sever_Init()
 // Web网页设置函数
 void Web_Sever()
 {
-  if (WiFi.status() != WL_CONNECTED){
-    Serial.println("Web server Error:WiFi is not Connected.");
-    WiFi.reconnect();
-    return;    
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("getCitycode Error:WiFi is not Connected.");
+    LostWiFi = true;
+    return;
+  }
+  else
+  {
+    LostWiFi = false;
   }
   // MDNS.update();
   server.handleClient();

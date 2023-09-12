@@ -14,7 +14,7 @@ class HttpsGetUtils {
     static const char  *host;		// 服务器地址
   private:
     static bool fetchBuffer(const char* url);
-    static uint8_t _buffer[1024 * 4]; //gzip流最大缓冲区
+    static uint8_t _buffer[1024 * 3]; //gzip流最大缓冲区
     static size_t _bufferSize;
  
 };
